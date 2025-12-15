@@ -309,10 +309,7 @@
         // higher pixels-per-unit scale (similar to that page's 100px ≈ 1 unit).
         const createNewSlimeController = () => {
             const color = slimeColors[Math.floor(Math.random() * slimeColors.length)];
-            return new SlimeController({
-                color,
-                pixelsPerUnit: 100, // was default (60); larger value => bigger slime on screen
-            });
+            return new SlimeController({ color });
         };
 
         // Create initial controller
