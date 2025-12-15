@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Capsule Visualization Example</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        // Setup canvas with proper scaling
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true)
+
+        // State for the two points
+        let point1 = vec2(-2, 0)
+        let point2 = vec2(2, 0)
+        let selectedPoint = null
+
+        // GUI controls
+        const controls = {
+            radius1: 1.25,  // Radius at point1
+            radius2: 0.3,  // Radius at point2
+            _hints: {
+                radius1: { min: 0.05, max: 55.5, step: 0.05 },
+                radius2: { min: 0.05, max: 55.5, step: 0.05 }
+            }
+        }
+
+        // Create GUI with configuration
+        ez.gui(controls, {}, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        })
+
+        // Mouse interaction using ezdraw helpers
+        ez.onMouseDown((e) => {
+            const worldPos = ez.getMousePosWorld()
+
+            // Check if we're clicking near either point
+            const dist1 = worldPos.sub(point1).len()
+            const dist2 = worldPos.sub(point2).len()
+
+            if (dist1 < 0.3) {
+                selectedPoint = 1
+            } else if (dist2 < 0.3) {
+                selectedPoint = 2
+            }
+        })
+
+        ez.onMouseMove((e) => {
+            if (selectedPoint !== null) {
+                const worldPos = ez.getMousePosWorld()
+                if (selectedPoint === 1) {
+                    point1 = worldPos
+                } else {
+                    point2 = worldPos
+                }
+            }
+        })
+
+        ez.onMouseUp((e) => {
+            selectedPoint = null
+        })
+
+        function drawCapsuleShape(pos, rot, length, r1, r2) {
+            // Prepare transformation matrix (local-to-screen)
+            let transform = mat3x4().rotated(vec3(0, 0, 1), rot || 0);
+            transform.setOrigin(pos);
+
+            // If the distance between endpoints is too small compared to the radii difference,
+            // the smaller circle is completely inside the larger. In that case, draw a regular circle.
+            if (length <= Math.abs(r2 - r1)) {
+                //return;
+                // Determine which end has the larger radius and adjust center accordingly
+                let isR2Larger = r2 > r1;
+                let rad = Math.max(r1, r2);
+                let offset = isR2Larger ? length / 2 : -length / 2;
+                let centerLocal = new vec3(offset, 0, 0);
+                let centerScreen = ez.worldToScreen(centerLocal, transform);
+                let pointOnPeriphery = ez.worldToScreen(new vec3(offset + rad, 0, 0), transform);
+                let transformedRad = pointOnPeriphery.sub(centerScreen).length();
+                ez.ctx.beginPath();
+                ez.ctx.arc(centerScreen.x, centerScreen.y, transformedRad, 0, 2 * Math.PI);
+                ez.ctx.strokeStyle = 'black';
+                ez.ctx.lineWidth = 2;
+                ez.ctx.stroke();
+                return;
+            }
+
+            // Compute factor for envelope (common for both endpoints)
+            let factor = Math.sqrt(1 - Math.pow((r2 - r1) / length, 2));
+
+            // Compute screen-space centers and transformed radii for the endpoint circles
+            let leftCenterLocal = new vec3(-length / 2, 0, 0);
+            let rightCenterLocal = new vec3(length / 2, 0, 0);
+            let leftCenterScreen = ez.worldToScreen(leftCenterLocal, transform);
+            let rightCenterScreen = ez.worldToScreen(rightCenterLocal, transform);
+
+            let leftRadiusPoint = ez.worldToScreen(new vec3(-length / 2, r1, 0), transform);
+            let transformedR1 = leftRadiusPoint.sub(leftCenterScreen).length();
+
+            let rightRadiusPoint = ez.worldToScreen(new vec3(length / 2, r2, 0), transform);
+            let transformedR2 = rightRadiusPoint.sub(rightCenterScreen).length();
+
+            // Compute tangency points (in local coordinates) where the envelope meets the endpoint circles
+            let leftTangencyTopLocal = {
+                x: -length / 2 - ((r2 - r1) * r1) / length,
+                y: r1 * factor
+            };
+            let leftTangencyBottomLocal = {
+                x: -length / 2 - ((r2 - r1) * r1) / length,
+                y: -r1 * factor
+            };
+            let rightTangencyTopLocal = {
+                x: length / 2 - ((r2 - r1) * r2) / length,
+                y: r2 * factor
+            };
+            let rightTangencyBottomLocal = {
+                x: length / 2 - ((r2 - r1) * r2) / length,
+                y: -r2 * factor
+            };
+
+            let leftTangencyTop = ez.worldToScreen(new vec3(leftTangencyTopLocal.x, leftTangencyTopLocal.y, 0), transform);
+            let leftTangencyBottom = ez.worldToScreen(new vec3(leftTangencyBottomLocal.x, leftTangencyBottomLocal.y, 0), transform);
+            let rightTangencyTop = ez.worldToScreen(new vec3(rightTangencyTopLocal.x, rightTangencyTopLocal.y, 0), transform);
+            let rightTangencyBottom = ez.worldToScreen(new vec3(rightTangencyBottomLocal.x, rightTangencyBottomLocal.y, 0), transform);
+
+            // Just using this function to draw tangent lines now. Dotted lines from top to bottom for each end.
+            {
+                ez.ctx.save();
+                ez.ctx.setLineDash([5, 5]);
+                ez.ctx.beginPath();
+                ez.ctx.moveTo(leftTangencyTop.x, leftTangencyTop.y);
+                ez.ctx.lineTo(leftTangencyBottom.x, leftTangencyBottom.y);
+                ez.ctx.strokeStyle = '#00000077';
+                ez.ctx.lineWidth = 2;
+                ez.ctx.stroke();
+
+                ez.ctx.beginPath(); 
+                ez.ctx.moveTo(rightTangencyTop.x, rightTangencyTop.y);
+                ez.ctx.lineTo(rightTangencyBottom.x, rightTangencyBottom.y);
+                ez.ctx.strokeStyle = '#00000077';
+                ez.ctx.lineWidth = 2;
+                ez.ctx.stroke();
+
+                // Draw tiny black dots at the ends of the dotted lines
+                ez.ctx.setLineDash([]);
+                ez.ctx.fillStyle = 'black';
+                
+                // Left tangency points
+                ez.ctx.beginPath();
+                ez.ctx.arc(leftTangencyTop.x, leftTangencyTop.y, 2.5, 0, 2 * Math.PI);
+                ez.ctx.fill();
+                
+                ez.ctx.beginPath();
+                ez.ctx.arc(leftTangencyBottom.x, leftTangencyBottom.y, 2.5, 0, 2 * Math.PI);
+                ez.ctx.fill();
+                
+                // Right tangency points
+                ez.ctx.beginPath();
+                ez.ctx.arc(rightTangencyTop.x, rightTangencyTop.y, 2.5, 0, 2 * Math.PI);
+                ez.ctx.fill();
+                
+                ez.ctx.beginPath();
+                ez.ctx.arc(rightTangencyBottom.x, rightTangencyBottom.y, 2.5, 0, 2 * Math.PI);
+                ez.ctx.fill();
+
+                ez.ctx.restore();
+                //return;
+            }
+
+            // Begin drawing the complete capsule shape
+            ez.ctx.beginPath();
+
+            // 1. Start at the left endpoint's top tangency point
+            ez.ctx.moveTo(leftTangencyTop.x, leftTangencyTop.y);
+
+            // 2. Draw the right endpoint's arc (clockwise)
+            {
+                let angleTop = Math.atan2(rightTangencyTop.y - rightCenterScreen.y, rightTangencyTop.x - rightCenterScreen.x);
+                let angleBottom = Math.atan2(rightTangencyBottom.y - rightCenterScreen.y, rightTangencyBottom.x - rightCenterScreen.x);
+                ez.ctx.arc(rightCenterScreen.x, rightCenterScreen.y, transformedR2, angleTop, angleBottom, false);
+            }
+
+            // 3. Draw the left endpoint's arc (clockwise)
+            {
+                let angleBottom = Math.atan2(leftTangencyBottom.y - leftCenterScreen.y, leftTangencyBottom.x - leftCenterScreen.x);
+                let angleTop = Math.atan2(leftTangencyTop.y - leftCenterScreen.y, leftTangencyTop.x - leftCenterScreen.x);
+                ez.ctx.arc(leftCenterScreen.x, leftCenterScreen.y, transformedR1, angleBottom, angleTop, false);
+            }
+
+            // Close the path and stroke
+            ez.ctx.closePath();
+            ez.ctx.strokeStyle = 'black';
+            ez.ctx.lineWidth = 2;
+            ez.ctx.stroke();
+        }
+
+
+        function drawTrueCapsule() {
+            // Calculate capsule properties
+            const dir = point2.sub(point1)
+            const length = dir.len()
+            const angle = Math.atan2(dir.y, dir.x)
+            const center = point1.add(dir.scaled(0.5))
+
+            // Draw the capsule using our implementation
+            ez.capsule(center, angle, length, controls.radius1, controls.radius2).stroke('black', 2)
+        }
+
+        function drawCapsule() {
+            // Draw the main line connecting the points
+            ez.line(point1, point2).stroke('black', 2)
+
+            // Calculate direction and length
+            const dir = point2.sub(point1)
+            const length = dir.len()
+            const normalizedDir = dir.scaled(1 / length)
+
+            // Calculate perpendicular direction
+            const perpDir = vec2(-normalizedDir.y, normalizedDir.x)
+
+            let numCircles = Math.ceil(length*3)
+            // Draw circles along the line
+            for (let i = 0; i <= numCircles; i++) {
+                const t = i / numCircles
+                const center = point1.add(dir.scaled(t))
+
+                // Smoothly interpolate radius between the two ends
+                const radius = controls.radius1 * (1 - t) + controls.radius2 * t
+
+                //ez.circle(center, radius).fill('rgba(0, 0, 255, 0.025)')
+            }
+
+            //drawTrueCapsule()
+
+            // Draw end points with different color
+            ez.circle(point1, 0.05).fill('red')
+            ez.circle(point2, 0.05).fill('red')
+
+            // Draw start and end circles
+            ez.circle(point1, controls.radius1).fill('rgba(0, 0, 255, 0.2)')
+            ez.circle(point2, controls.radius2).fill('rgba(0, 0, 255, 0.2)')
+
+
+            let rot = Math.atan2(point2.y - point1.y, point2.x - point1.x)
+            drawCapsuleShape(point1.add(point2).scaled(0.5), rot, length, controls.radius1, controls.radius2)
+        }
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey")
+            ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey")
+
+            // Draw the capsule
+            drawCapsule()
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>

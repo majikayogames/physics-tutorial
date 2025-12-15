@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Box Collision Energy Conservation Test</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+  <script src="ezdraw.js"></script>
+  <script src="../simple_phys.js"></script>
+  <script src="simple_phys_ezdraw_renderer.js"></script>
+  <script>
+    // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+    let canvas = ez.createCanvasAndAddToPage()
+    ez.centerOrigin = true
+    ez.letterBoxCamera(vec2(0, 0), vec2(16, 8), true)
+
+    const world = new PhysWorld();
+    world.gravity = new Vec2(0, 0); // No gravity for cleaner energy test
+
+    // Create two boxes
+    const boxA = world.addBox(-4, 0, 1, 1); // Moving box on left
+    //const boxA = world.addCircle(-4, 0, 0.5, 1, false); // Moving box on left
+    const boxB = world.addBox(4, 0, 1, 1);  // Stationary box on right
+
+    // Set properties
+    boxA.restitution = 1.0; // Perfect elastic collision
+    boxB.restitution = 1.0;
+    boxA.friction = 0.0;    // No friction for cleaner energy test
+    boxB.friction = 0.0;
+
+    let timePassed = 0;
+
+    function resetBoxes() {
+      // Reset positions
+      boxA.position = new Vec2(-4, 0.0);
+      boxB.position = new Vec2(4, 0);
+      
+      // Give boxA initial velocity to the right
+      boxA.velocity = new Vec2(3, 0);
+      boxB.velocity = new Vec2(0, 0);
+      
+      // Reset rotation
+      boxA.rotation = 0;
+      boxB.rotation = 0;
+      boxA.angularVelocity = 0;
+      boxB.angularVelocity = 0;
+    }
+
+    function getKineticEnergy(obj) {
+      const translationalKE = 0.5 * obj.mass * (obj.velocity.x * obj.velocity.x + obj.velocity.y * obj.velocity.y);
+      const rotationalKE = 0.5 * obj.momentOfInertia * obj.angularVelocity * obj.angularVelocity;
+      return translationalKE + rotationalKE;
+    }
+
+    // Initialize
+    resetBoxes();
+
+    // Main animation function
+    function update(dt) {
+      ez.clear()
+
+      timePassed += dt;
+      if (timePassed > 8) {
+        resetBoxes();
+        timePassed = 0;
+      }
+
+      // Draw grid for reference
+      ez.ctx.lineWidth = 1
+      ez.grid(1, 50).stroke(0xbbbbbb)
+
+      // Step physics
+      world.step(dt);
+
+      // Render physics world
+      PhysRenderer.render(world);
+
+      // Calculate energies
+      const energyA = getKineticEnergy(boxA);
+      const energyB = getKineticEnergy(boxB);
+      const totalEnergy = energyA + energyB;
+
+      // Display energy values
+      const textOptions = {
+        fontFamily: "'Source Sans Pro', sans-serif",
+        fontSize: 16,
+        textAlign: "left",
+        textBaseline: "middle",
+        fontStyle: "500"
+      };
+
+      ez.text(`Circle A (Left):`, vec2(-7.5, 3.5), textOptions).fill("black");
+      ez.text(`  KE: ${energyA.toFixed(3)} J`, vec2(-7.5, 3.2), textOptions).fill("blue");
+      ez.text(`  Vel: (${boxA.velocity.x.toFixed(2)}, ${boxA.velocity.y.toFixed(2)})`, vec2(-7.5, 2.9), textOptions).fill("gray");
+
+      ez.text(`Box B (Right):`, vec2(-7.5, 2.3), textOptions).fill("black");
+      ez.text(`  KE: ${energyB.toFixed(3)} J`, vec2(-7.5, 2.0), textOptions).fill("blue");
+      ez.text(`  Vel: (${boxB.velocity.x.toFixed(2)}, ${boxB.velocity.y.toFixed(2)})`, vec2(-7.5, 1.7), textOptions).fill("gray");
+
+      ez.text(`Total Energy:`, vec2(-7.5, 1.1), textOptions).fill("black");
+      ez.text(`  ${totalEnergy.toFixed(3)} J`, vec2(-7.5, 0.8), textOptions).fill("green");
+
+      // Calculate expected energy (initial energy was 0.5 * mass * 3^2 for circle A)
+      // Circle mass = π * r^2 = π * 0.5^2 = π * 0.25 ≈ 0.785
+      const expectedEnergy = 0.5 * boxA.mass * 9; // 0.5 * mass * velocity^2
+      const energyConservation = (totalEnergy / expectedEnergy) * 100;
+      
+      ez.text(`Energy Conservation:`, vec2(-7.5, 0.2), textOptions).fill("black");
+      ez.text(`  ${energyConservation.toFixed(1)}%`, vec2(-7.5, -0.1), textOptions).fill(energyConservation > 99 ? "green" : "orange");
+      
+      ez.text(`Physics Engine: simple_phys.js`, vec2(-7.5, -0.7), textOptions).fill("purple");
+    }
+    
+    PhysRenderer.initMouseControls(world);
+
+    // Start the animation
+    ez.callAnimate(update, true);
+  </script>
+</body>
+
+</html> 

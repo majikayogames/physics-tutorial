@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Puck Impulse Demo</title>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true)
+
+
+        // Create physics world
+        let world = new PhysWorld()
+        world.gravity = new Vec2(0, 0)  // Disable gravity
+        
+        // Create a single puck
+        let puck = world.addBox(0, 0, 1, 1)
+        puck.damping = 0.98  // Linear damping
+        puck.angularDamping = 0.98  // Angular damping
+
+        // Disable default mouse controls
+        PhysRenderer.initMouseControls = () => {}
+
+        // Simulation state
+        let isPaused = false
+        let showingArrow = false
+        let arrowStart = null
+        let arrowEnd = null
+        let arrowTimeout = null
+
+        // Mouse interaction state
+        let isDragging = false
+        let dragStart = null
+        let isHovered = false
+        let isCanvasHovered = false
+        let lastAutoImpulseTime = Date.now()  // Initialize to current time instead of 0
+        let playStartTimeout = null
+        const AUTO_IMPULSE_INTERVAL = 3000  // 3 seconds between auto impulses
+        const AUTO_IMPULSE_ENABLED = true  // Toggle for automatic impulses (temporarily disabled)
+        const COMPUTER_DRAG_SPEED = 4  // Units per second for the drag animation
+        const BASE_IMPULSE_MULTIPLIER = 1.0  // Base multiplier for impulses
+        const PLAY_DELAY = 3000  // 3 second delay before computer starts playing
+        let animationFrameId = null  // Track animation frame for cancellation
+
+        function freezeSimulation() {
+            isPaused = true
+            // Zero out all velocities when freezing
+            puck.velocity = new Vec2(0, 0)
+            puck.angularVelocity = 0
+        }
+
+        function resumeSimulation() {
+            isPaused = false
+        }
+
+        function scheduleNextComputerPlay(delay = PLAY_DELAY) {
+            // Clear any existing timeouts
+            if (playStartTimeout) {
+                clearTimeout(playStartTimeout)
+            }
+            if (arrowTimeout) {
+                clearTimeout(arrowTimeout)
+            }
+
+            // If auto-impulses are disabled, do nothing
+            if (!AUTO_IMPULSE_ENABLED) {
+                return
+            }
+
+            // Schedule next play (only if enabled)
+            playStartTimeout = setTimeout(() => {
+                if (!isCanvasHovered && !isPaused) {
+                    applyRandomImpulse()
+                    lastAutoImpulseTime = Date.now()
+                }
+                playStartTimeout = null
+            }, delay)
+        }
+
+        // Setup mouse controls
+        canvas.addEventListener('mouseenter', () => {
+            isCanvasHovered = true
+            
+            // Cancel any pending or active computer animations
+            if (playStartTimeout) {
+                clearTimeout(playStartTimeout)
+                playStartTimeout = null
+            }
+            
+            // Cancel animation frame if active
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId)
+                animationFrameId = null
+            }
+            
+            // If there's an active arrow animation, cancel it and resume simulation
+            if (arrowTimeout) {
+                clearTimeout(arrowTimeout)
+                arrowTimeout = null
+                arrowStart = null
+                arrowEnd = null
+                resumeSimulation()
+                // Update last auto impulse time to prevent immediate re-trigger
+                lastAutoImpulseTime = Date.now()
+            }
+            
+            // If there's an active arrow being drawn (animation in progress)
+            if (arrowStart && arrowEnd) {
+                arrowStart = null
+                arrowEnd = null
+                resumeSimulation()
+                // Update last auto impulse time to prevent immediate re-trigger
+                lastAutoImpulseTime = Date.now()
+            }
+            
+            // If simulation is paused but no user is dragging, resume it
+            if (isPaused && !isDragging) {
+                resumeSimulation()
+            }
+        })
+
+        canvas.addEventListener('mouseleave', () => {
+            isCanvasHovered = false
+            
+            // If simulation is paused and user isn't dragging, resume it
+            if (isPaused && !isDragging) {
+                resumeSimulation()
+            }
+            
+            // Schedule next play after delay
+            scheduleNextComputerPlay()
+        })
+
+        ez.onMouseMove(() => {
+            const mouseWorld = ez.getMousePosWorld()
+            const mousePos = new Vec2(mouseWorld.x, mouseWorld.y)
+            
+            // Update hover state
+            isHovered = puck.containsPoint(mousePos)
+
+            if (isDragging) {
+                arrowStart = dragStart
+                arrowEnd = mousePos
+            }
+        })
+
+        ez.onMouseDown(() => {
+            const mouseWorld = ez.getMousePosWorld()
+            const mousePos = new Vec2(mouseWorld.x, mouseWorld.y)
+            
+            if (puck.containsPoint(mousePos)) {
+                // Clear any automated animation in progress when player starts dragging
+                if (arrowTimeout) {
+                    clearTimeout(arrowTimeout)
+                    arrowTimeout = null
+                }
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId)
+                    animationFrameId = null
+                }
+                // Clear any arrow display
+                arrowStart = null
+                arrowEnd = null
+                
+                // Update last auto impulse time to prevent immediate re-trigger
+                lastAutoImpulseTime = Date.now()
+                
+                isDragging = true
+                dragStart = mousePos
+                freezeSimulation()
+            }
+        })
+
+        ez.onMouseUp(() => {
+            if (isDragging && dragStart) {
+                const mouseWorld = ez.getMousePosWorld()
+                const mousePos = new Vec2(mouseWorld.x, mouseWorld.y)
+                
+                // Calculate impulse vector (from mouse to drag start, like a slingshot)
+                const impulse = mousePos.sub(dragStart)
+                const impulseMagnitude = impulse.length()
+                
+                // Scale impulse by its length for more dramatic long pulls
+                const scaledImpulse = impulse.scale(impulseMagnitude * BASE_IMPULSE_MULTIPLIER)
+                
+                // Apply impulse at the drag start point
+                puck.applyImpulse(scaledImpulse, dragStart)
+                
+                // Clear arrow and resume
+                arrowStart = null
+                arrowEnd = null
+                resumeSimulation()
+            }
+            
+            isDragging = false
+            dragStart = null
+        })
+
+        function applyRandomImpulse() {
+            // Generate random angle and magnitude
+            const angle = Math.random() * Math.PI * 2
+            const magnitude = 0.75 + Math.random() * 1  // Smaller drag distance (0.75-1.75)
+            
+            // Calculate impulse vector
+            const impulse = new Vec2(magnitude, 0).rotate(angle)
+            
+            // Apply at a random point on the puck's edge
+            const offset = new Vec2(puck._boxHints.width/2, 0).rotate(Math.random() * Math.PI * 2)
+            const applicationPoint = puck.position.add(offset)
+            
+            // Calculate pull-back distance based on magnitude
+            const pullBackDist = magnitude  // Direct 1:1 mapping like human interaction
+            
+            freezeSimulation()
+            arrowStart = applicationPoint
+            
+            // Calculate total animation time based on distance and speed
+            const totalDragTime = (pullBackDist * magnitude) / COMPUTER_DRAG_SPEED * 1000  // Convert to milliseconds
+            
+            // Animate the drag
+            const startTime = Date.now()
+            function animateDrag() {
+                const progress = (Date.now() - startTime) / totalDragTime
+                if (progress < 1) {
+                    // Interpolate arrow end position
+                    const currentEnd = applicationPoint.add(
+                        impulse.scale(progress * pullBackDist)  // Scale by pull-back distance
+                    )
+                    arrowEnd = currentEnd
+                    animationFrameId = requestAnimationFrame(animateDrag)
+                } else {
+                    animationFrameId = null
+                    // Apply the impulse after drag animation
+                    arrowTimeout = setTimeout(() => {
+                        // Scale final impulse by pull-back distance
+                        const scaledImpulse = impulse.scale(magnitude * BASE_IMPULSE_MULTIPLIER)
+                        puck.applyImpulse(scaledImpulse, applicationPoint)
+                        arrowStart = null
+                        arrowEnd = null
+                        resumeSimulation()
+                        arrowTimeout = null
+                    }, 800)  // Wait 1.5 seconds before applying the impulse
+                }
+            }
+            
+            animateDrag()
+        }
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+            
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+            
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey")
+            ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey")
+            
+            // Render physics objects
+            PhysRenderer.render(world)
+            
+            // Draw arrow on top if present
+            if (arrowStart && arrowEnd) {
+                ez.arrow(vec2(arrowStart.x, arrowStart.y), vec2(arrowEnd.x, arrowEnd.y), 8).fill("black")  // Filled black arrow
+                ez.circle(vec2(arrowStart.x, arrowStart.y), 0.03).fill("black")
+            }
+            
+            // Calculate and display Force and Torque values
+            let forceVector = new Vec2(0, 0)
+            let torqueValue = 0
+            let forceMagnitude = 0
+            
+            if (arrowStart && arrowEnd) {
+                // Calculate the impulse vector (force direction and magnitude)
+                const impulse = arrowEnd.sub(arrowStart)
+                const impulseMagnitude = impulse.length()
+                forceVector = impulse.scale(impulseMagnitude * BASE_IMPULSE_MULTIPLIER)
+                forceMagnitude = forceVector.length()
+                // Calculate torque: r × F (2D cross product)
+                const r = arrowStart.sub(puck.position)  // Vector from center of mass to application point
+                torqueValue = r.x * forceVector.y - r.y * forceVector.x
+            }
+            
+            // Display Force and Torque in bottom left corner
+            // Use a nice font and style similar to torque_with_particles.html
+            const textOptions = {
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontSize: 18,
+                textAlign: "left",
+                textBaseline: "bottom",
+                fontStyle: "500"  // Semi-bold
+            };
+            
+            const bottomLeft = ez.screenToWorld(vec2(10, canvas.height - 10))
+            
+            // Only show values if an arrow is being drawn
+            if (arrowStart && arrowEnd) {
+                ez.text(`Force: ${forceMagnitude.toFixed(2)}\nTorque: ${torqueValue.toFixed(2)}`, vec2(bottomLeft.x, bottomLeft.y), textOptions).fill("black");
+            }
+            
+            // Update physics only if not paused
+            if (!isPaused) {
+                world.step(dt)
+                
+                // Apply damping
+                puck.velocity = puck.velocity.scale(puck.damping)
+                puck.angularVelocity *= puck.angularDamping
+                
+                // Keep puck in bounds by converting screen edges to world coordinates
+                const topLeft = ez.screenToWorld(vec2(0, 0))
+                const bottomRight = ez.screenToWorld(vec2(canvas.width, canvas.height))
+                const margin = puck._boxHints.width  // Use puck width as margin
+                const pushForce = 0.5  // Reduced push force since we're in world coordinates
+                
+                // Check each edge and apply force if too close
+                if (puck.position.x < topLeft.x + margin) {
+                    // Too close to left edge
+                    const penetration = (topLeft.x + margin) - puck.position.x
+                    puck.velocity.x += pushForce * penetration
+                }
+                if (puck.position.x > bottomRight.x - margin) {
+                    // Too close to right edge
+                    const penetration = puck.position.x - (bottomRight.x - margin)
+                    puck.velocity.x -= pushForce * penetration
+                }
+                if (puck.position.y > topLeft.y - margin) {
+                    // Too close to top edge
+                    const penetration = puck.position.y - (topLeft.y - margin)
+                    puck.velocity.y -= pushForce * penetration
+                }
+                if (puck.position.y < bottomRight.y + margin) {
+                    // Too close to bottom edge
+                    const penetration = (bottomRight.y + margin) - puck.position.y
+                    puck.velocity.y += pushForce * penetration
+                }
+
+                // Apply random impulses when not hovering over canvas
+                const now = Date.now()
+                if (AUTO_IMPULSE_ENABLED &&
+                    !isCanvasHovered && !isPaused && !playStartTimeout && !arrowTimeout && 
+                    !animationFrameId && !arrowStart &&  // Also check no active animation or arrow
+                    now - lastAutoImpulseTime > AUTO_IMPULSE_INTERVAL) {
+                    scheduleNextComputerPlay(0)  // Schedule immediate play
+                }
+            }
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+
+        // Set initial delay before computer starts playing (currently disabled via AUTO_IMPULSE_ENABLED flag)
+        scheduleNextComputerPlay()
+    </script>
+</body>
+</html> 

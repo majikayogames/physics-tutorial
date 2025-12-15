@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Force, work, energy demo</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+  <script src="ezdraw.js"></script>
+  <script>
+    // Basic version of simple_phys just for particles
+    class Vec2 {
+      constructor(x, y) { this.x = x; this.y = y; }
+      add(other) { return new Vec2(this.x + other.x, this.y + other.y); }
+      sub(other) { return new Vec2(this.x - other.x, this.y - other.y); }
+      scale(scalar) { return new Vec2(this.x * scalar, this.y * scalar); }
+      dot(other) { return this.x * other.x + this.y * other.y; }
+      cross(other) { return this.x * other.y - this.y * other.x; }
+      crossSv(scalar) { return new Vec2(-this.y * scalar, this.x * scalar); }
+      length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+      normalized() { return (Math.abs(this.x) < 0.000000001 && Math.abs(this.y) < 0.000000001) ? new Vec2(1, 0) : this.scale(1 / this.length()); }
+      rotate(angle) { const cos = Math.cos(angle); const sin = Math.sin(angle); return new Vec2(this.x * cos - this.y * sin, this.x * sin + this.y * cos); }
+      rotate90CCW() { return new Vec2(-this.y, this.x); }
+      min(other) { return new Vec2(Math.min(this.x, other.x), Math.min(this.y, other.y)); }
+      max(other) { return new Vec2(Math.max(this.x, other.x), Math.max(this.y, other.y)); }
+    }
+
+    class PhysObject {
+      constructor(x, y, mass) {
+        this.position = new Vec2(x, y);
+        this.velocity = new Vec2(0, 0);
+        this.mass = mass;
+        this.force = new Vec2(0, 0);
+      }
+
+      addForce(f) {
+        this.force = this.force.add(f);
+      }
+
+      step(dt) {
+        const acceleration = this.force.scale(1 / this.mass);
+        this.velocity = this.velocity.add(acceleration.scale(dt));
+        this.position = this.position.add(this.velocity.scale(dt));
+      }
+
+      applyImpulse(impulse) {
+        this.velocity = this.velocity.add(impulse.scale(1 / this.mass));
+      }
+    }
+
+    class PhysWorld {
+      constructor() {
+        this.objects = [];
+      }
+
+      step(dt) {
+        const substeps = 40;
+        const dtSubstep = dt / substeps;
+
+        for (let k = 0; k < substeps; ++k) {
+          for (const obj of this.objects) obj.step(dtSubstep);
+        }
+      }
+    }
+  </script>
+  <script>
+const pebbleSvg = `
+<!-- Improved Pebble -->
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="pebbleGrad" cx="45%" cy="40%">
+      <stop offset="0%" style="stop-color:#D4C4A6"/>
+      <stop offset="40%" style="stop-color:#C4B090"/>
+      <stop offset="80%" style="stop-color:#B8A082"/>
+      <stop offset="100%" style="stop-color:#9A8570"/>
+    </radialGradient>
+    <filter id="blur">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="0.5"/>
+    </filter>
+  </defs>
+  
+  <!-- Main pebble shape -->
+  <path d="M43 61 C 36 58, 36 48, 43 45 C 48 42, 54 42, 59 45 C 66 48, 66 58, 59 61 C 56 67, 48 68, 43 61Z" 
+        fill="url(#pebbleGrad)" stroke="black" stroke-width="2.0"/>
+  
+     <!-- Soft highlight -->
+   <ellipse cx="48" cy="49" rx="6" ry="4" fill="#C8B898" opacity="0.4" filter="url(#blur)" transform="rotate(-20 48 49)"/>
+   
+   <!-- Additional subtle shadow -->
+   <path d="M46 58 C 48 59, 51 59, 53 58 C 54 59, 53 61, 51 62 C 49 62, 47 61, 46 60 C 46 59, 46 58, 46 58Z" 
+         fill="#8A7560" opacity="0.3" filter="url(#blur)"/>
+</svg>
+`;
+
+const rockSvg = `
+<!-- Improved Rock -->
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="rockGrad" cx="40%" cy="35%">
+      <stop offset="0%" style="stop-color:#D4C4A6"/>
+      <stop offset="30%" style="stop-color:#C4B090"/>
+      <stop offset="70%" style="stop-color:#B8A082"/>
+      <stop offset="100%" style="stop-color:#9A8570"/>
+    </radialGradient>
+    <linearGradient id="shadowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#B8A082"/>
+      <stop offset="100%" style="stop-color:#8A7560"/>
+    </linearGradient>
+    <filter id="rockBlur">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="1"/>
+    </filter>
+    <filter id="softBlur">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="0.8"/>
+    </filter>
+  </defs>
+  
+  <!-- Main rock shape -->
+  <path d="M22 68 C 8 59, 8 32, 26 22 C 39 8, 59 8, 72 22 C 90 32, 90 59, 72 68 C 66 85, 41 89, 22 68Z" 
+        fill="url(#rockGrad)" stroke="black" stroke-width="2.5"/>
+  
+     <!-- Top highlight with soft edges -->
+   <path d="M34 32 C 42 24, 50 22, 58 30 C 64 35, 66 42, 64 47 C 61 45, 56 42, 51 40 C 43 37, 37 34, 34 32Z" 
+         fill="#C8B898" opacity="0.4" filter="url(#softBlur)"/>
+   
+   <!-- Mid-tone areas -->
+   <ellipse cx="38" cy="48" rx="10" ry="6" fill="#C4B090" opacity="0.2" filter="url(#rockBlur)" transform="rotate(25 38 48)"/>
+   
+   <!-- Bottom shadows with gradient -->
+   <path d="M28 62 C 32 67, 42 72, 52 70 C 62 68, 68 62, 68 57 C 66 67, 58 75, 43 76 C 32 76, 24 70, 28 62Z" 
+         fill="url(#shadowGrad)" opacity="0.4" filter="url(#softBlur)"/>
+   
+   <!-- Additional depth shadow -->
+   <path d="M50 67 C 57 65, 62 62, 64 57 C 62 64, 57 70, 50 72 C 44 72, 40 70, 38 67 C 42 68, 46 68, 50 67Z" 
+         fill="#8A7560" opacity="0.2" filter="url(#rockBlur)"/>
+</svg>
+`;
+
+    const pebbleUrl = 'data:image/svg+xml;base64,' + btoa(pebbleSvg);
+    const rockUrl = 'data:image/svg+xml;base64,' + btoa(rockSvg);
+
+    // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+    let canvas = ez.createCanvasAndAddToPage()
+    ez.centerOrigin = true
+
+    const world = new PhysWorld();
+    
+    const forceStartXA = -1.75;
+    const forceStartXB = -1.23;
+    const pebble = new PhysObject(forceStartXA, 2, 1); // 10g
+    const rock = new PhysObject(forceStartXB, -2, 10); // 100g
+    world.objects.push(pebble);
+    world.objects.push(rock);
+    
+    const forceDistance = 1;
+    const forceMagnitude = 1; // N
+    const appliedForce = new Vec2(forceMagnitude, 0);
+    let forceApplicationPhase = true;
+
+    function resetRocks() {
+      pebble.position = new Vec2(forceStartXA, 2);
+      pebble.velocity = new Vec2(0, 0);
+      rock.position = new Vec2(forceStartXB, -2);
+      rock.velocity = new Vec2(0, 0);
+      forceApplicationPhase = true;
+    }
+
+    function drawPhysWorld(world) {
+      ez.circle(pebble.position, 0.2).fill("black");
+      ez.circle(rock.position, 0.4).fill("black");
+    }
+
+    let timePassed = 0;
+
+    // Main animation function
+    function update(dt) {
+      ez.clear()
+      ez.letterBoxCamera(new Vec2(5, 0), new Vec2(16.5, 8), true)
+
+      timePassed += dt;
+      if (timePassed > 15) {
+        resetRocks();
+        timePassed = 0;
+      }
+
+      let pebbleForceApplied = false;
+      let rockForceApplied = false;
+
+      if(forceApplicationPhase) {
+        if (pebble.position.x < forceStartXA + forceDistance) {
+            pebble.addForce(appliedForce);
+            pebbleForceApplied = true;
+        }
+        
+        if (rock.position.x < forceStartXB + forceDistance) {
+            rock.addForce(appliedForce);
+            rockForceApplied = true;
+        }
+        
+        if(!pebbleForceApplied && !rockForceApplied) {
+            forceApplicationPhase = false;
+        }
+      }
+
+      world.step(1 / 60);
+
+      for (const obj of world.objects) {
+        obj.force = new Vec2(0, 0);
+      }
+
+      // Draw grid for reference
+      ez.ctx.lineWidth = 1
+      ez.grid(1, 50).stroke(0xbbbbbb)
+
+      // Draw coordinate axes
+      ez.ctx.lineWidth = 1.5
+      ez.line(new Vec2(-1000, 0), new Vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey")
+
+      //drawPhysWorld(world);
+      ez.image(pebbleUrl, pebble.position, 0, 1.42).draw();
+      ez.image(rockUrl, rock.position, 0, 1.42).draw();
+
+      if (pebbleForceApplied) {
+        const arrowStart = pebble.position.sub(new Vec2(1.2, 0)).sub(new Vec2(0.09,0));
+        const arrowEnd = pebble.position.sub(new Vec2(0.2, 0)).sub(new Vec2(0.09,0));
+        ez.arrow(arrowStart, arrowEnd, 15).stroke("black");
+        ez.text(`Force of ${forceMagnitude}N`, arrowStart.add(new Vec2(0.5, 0.5)), { fontSize: 12, textAlign: "center", fontFamily: "'Source Sans Pro', sans-serif", fontStyle: '600' }).fill("black");
+      }
+      if (rockForceApplied) {
+        const arrowStart = rock.position.sub(new Vec2(1.4, 0)).sub(new Vec2(0.4,0));
+        const arrowEnd = rock.position.sub(new Vec2(0.4, 0)).sub(new Vec2(0.4,0));
+        ez.arrow(arrowStart, arrowEnd, 15).stroke("black");
+        ez.text(`Force of ${forceMagnitude}N`, arrowStart.add(new Vec2(0.5, 0.5)), { fontSize: 12, textAlign: "center", fontFamily: "'Source Sans Pro', sans-serif", fontStyle: '600' }).fill("black");
+      }
+
+      {
+        // Common text options for better formatting
+        const textOptions = {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 16,
+          textAlign: 'center',
+          textBaseline: 'middle',
+          lineHeight: 24,
+          fontStyle: '500'
+        };
+
+        // Display info for pebble (top)
+        const kePebble = 0.5 * pebble.mass * pebble.velocity.length()**2;
+        ez.text(`Pebble Mass: ${pebble.mass}kg\nVelocity: ${pebble.velocity.x.toFixed(1)} m/s\nKinetic Energy (Work done): ${kePebble.toFixed(1)} J\nMomentum: ${pebble.mass * pebble.velocity.x.toFixed(1)} kg m/s`, new Vec2(5, 2.9), textOptions).fill("black");
+
+        // Display info for rock (bottom)
+        const keRock = 0.5 * rock.mass * rock.velocity.length()**2;
+        ez.text(`Rock Mass: ${rock.mass}kg\nVelocity: ${rock.velocity.x.toFixed(1)} m/s\nKinetic Energy (Work done): ${keRock.toFixed(1)} J\nMomentum: ${rock.mass * rock.velocity.x.toFixed(1)} kg m/s`, new Vec2(5, -1.1), textOptions).fill("black");
+      }
+    }
+
+    // Start the animation
+    ez.callAnimate(update, true);
+  </script>
+</body>
+
+</html>

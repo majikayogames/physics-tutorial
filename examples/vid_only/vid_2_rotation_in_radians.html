@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Rotation in Radians Demo</title>
+</head>
+
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../simple_phys_mixed_verlet.js"></script>
+    <script src="../curtain_intro.js"></script>
+    <script src="../slime-renderer-mixed.js"></script>
+    <script src="../mixed_slime.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 1), vec2(12.76, 6.11), true)
+
+        // Create physics world with mixed verlet support
+        let world = new PhysWorldMixed()
+        world.gravity = new Vec2(0, -9.81) // Normal gravity
+
+        let slimeDropped = false
+        let startTime = Date.now()
+        let slime = null
+        let slimeRenderer = null
+
+        // Dot product viz state
+        let dpAngle = 0
+        const dpRotSpeed = 0.6
+
+        function formatNumber(num, precision = 2) {
+            const fixedStr = num.toFixed(precision)
+            if (parseFloat(fixedStr) === 0 && fixedStr.startsWith('-')) {
+                return precision === 0 ? "0" : ("0." + "0".repeat(precision))
+            }
+            return fixedStr
+        }
+
+        function drawDotProductViz(base, angle) {
+            const vectorA = vec2(1, 0)
+            const vectorB = vec2(1, 0).rotated(angle)
+
+            // Unit circle
+            ez.circle(base, 1).stroke(0xbbbbbb, { lineWidth: 2 })
+
+            // Vectors A and B
+            const endA = base.add(vectorA)
+            const endB = base.add(vectorB)
+            ez.arrow(base, endA, 10).fillAndStroke("#FFC04D", "#FFC04D", { lineWidth: 3, lineJoin: "round" })
+            ez.textBuffered("A", endA.add(vec2(0.15, 0)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#FFC04D")
+            ez.arrow(base, endB, 10).fillAndStroke("#6495ED", "#6495ED", { lineWidth: 3, lineJoin: "round" })
+            ez.textBuffered("B", endB.add(vectorB.normalized().scaled(0.15)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#6495ED")
+
+            // Triangle (SOH CAH TOA) for vector B
+            const localEndB = vectorB
+            const localCos = vec2(localEndB.x, 0)
+            const worldCos = base.add(localCos)
+            // Horizontal (cosine)
+            ez.line(base, worldCos).stroke("#4169E1", { lineWidth: 3 })
+            // Vertical (sine)
+            ez.line(worldCos, endB).stroke("#32CD32", { lineWidth: 3 })
+            if (Math.abs(localEndB.x) > 0.1) {
+                ez.textBuffered("cos(θ)", base.add(vec2(localEndB.x / 2, -0.15)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 14, textAlign: 'center', fontStyle: "bold" }).fill("#4169E1")
+            }
+            if (Math.abs(localEndB.y) > 0.1) {
+                ez.textBuffered("sin(θ)", base.add(vec2(localEndB.x + 0.19, localEndB.y / 2)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 14, textAlign: 'center', fontStyle: "bold" }).fill("#32CD32")
+            }
+
+            // Right angle symbol near the cosine projection corner
+            if (Math.abs(localEndB.x) > 0.1 && Math.abs(localEndB.y) > 0.1) {
+                const size = 0.1
+                const corner = worldCos
+                const xDir = localEndB.x > 0 ? -size : size
+                const yDir = size * Math.sign(localEndB.y)
+                const p1 = corner.add(vec2(xDir, 0))
+                const p2 = corner.add(vec2(xDir, yDir))
+                const p3 = corner.add(vec2(0, yDir))
+                ez.line(corner, p1).stroke("#FF6B6B", { lineWidth: 2 })
+                ez.line(p1, p2).stroke("#FF6B6B", { lineWidth: 2 })
+                ez.line(p2, p3).stroke("#FF6B6B", { lineWidth: 2 })
+            }
+
+            // Angle arc and label with fade behavior identical to the example
+            ez.save()
+            const deg = angle * 180 / Math.PI
+            if (deg > 340) {
+                ez.ctx.globalAlpha = 1.0 - (deg - 340) / 20
+            } else if (deg < 5 && deg >= 0) {
+                ez.ctx.globalAlpha = (deg - 0) / 5
+            } else {
+                ez.ctx.globalAlpha = 1.0
+            }
+            ez.arc(base, -angle, angle, .2, true).fill("#00000033", { lineWidth: 2 })
+            ez.arc(base, -angle, angle, .2, false).stroke("#555", { lineWidth: 3 })
+            ez.textWorldScaledBuffered('θ', base.add(vec2(.28, 0).rotated(angle / 2)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 1.5, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#555")
+            ez.restore()
+
+            // Dot and cos text
+            const dotProduct = vectorA.dot(vectorB)
+            const cosAngle = Math.cos(angle)
+            const textOptions = { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 18, textAlign: "center", textBaseline: "middle", fontStyle: "500" }
+            //ez.text(`A • B = ${formatNumber(dotProduct, 2)}`, base.add(vec2(0, -1.4)), textOptions).fill("black")
+            //ez.text(`cos(θ) = ${formatNumber(cosAngle, 2)}`, base.add(vec2(0, -1.6)), textOptions).fill("black")
+        }
+
+        // Create a simple scene with rotating blades and floor
+        function setupScene() {
+            console.log("Setting up scene...")
+            
+            // Left rotating blade setup (taller base, higher pivot)
+            const base = world.addBox(-4, -1.0, 0.6, 5, 1, true)
+            base.collisionMask = 0  // Make base non-colliding
+            const blade = world.addBox(-4, 1.0, 4, 0.25)
+            blade._renderColorHint = "#BAE1FF" // left: lighter blue from renderer palette
+            // blade can collide - remove collisionMask = 0
+            console.log("Left blade setup:", base, blade)
+
+            const motor = world.addRevoluteConstraint(base, blade, new Vec2(-4, 1.0))
+            motor.motorEnabled = true
+            motor.motorSpeed = -2
+            motor.motorMaxForce = 5
+
+            // Right rotating blade setup (taller base, higher pivot)
+            const base2 = world.addBox(4, -1.0, 0.6, 5, 1, true)
+            base2.collisionMask = 0  // Make base non-colliding
+            const blade2 = world.addBox(4, 1.0, 4, 0.25)
+            blade2._renderColorHint = "#FFE5A3" // right: pastel yellow from renderer palette
+            // blade2 can collide - remove collisionMask = 0
+            console.log("Right blade setup:", base2, blade2)
+
+            const motor2 = world.addRevoluteConstraint(base2, blade2, new Vec2(4, 1.0))
+            motor2.motorEnabled = true
+            motor2.motorSpeed = 2
+            motor2.motorMaxForce = 5
+
+            // Add floor AFTER windmills so it draws on top
+            const floor = world.addBox(0, -2.45, 20, 1, 1, true)
+            console.log("Floor created:", floor)
+            
+            console.log("Scene setup complete. Total objects:", world.objects.length)
+        }
+
+        // Create slime using the MixedSlime class like vid_1
+        function createSlime(x, y) {
+            console.log("Creating slime at:", x, y)
+            slimeRenderer = new MixedSlimeRenderer(ez)
+            document.body.appendChild(slimeRenderer.mainSVG)
+            slime = new MixedSlime(world, slimeRenderer, x, y, { 
+                radius: 0.8, 
+                groundAccel: 0.01, 
+                airAccel: 0.002, 
+                maxHorizSpeed: 1.6 
+            })
+            console.log("Slime created:", slime)
+        }
+        
+        // Set up initial scene
+        setupScene()
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+            
+            // Check if 5 seconds have passed and drop slime
+            const currentTime = Date.now()
+            if (!slimeDropped && (currentTime - startTime) > 5000) {
+                // Spawn fully off-screen above: compute world y above the top edge
+                const topWorld = ez.screenToWorld(vec2(canvas.width / 2, 0))
+                createSlime(0, topWorld.y + 2)
+                slimeDropped = true
+            }
+            
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.gridSvg(1, Infinity);
+            
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            //ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey")
+            //ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey")
+            
+            // Title and credit above the unit circle (similar to vid_1)
+            ;(function drawTitle() {
+                const topY = ez.screenToWorld(vec2(canvas.width / 2, 0)).y
+                const titlePos = vec2(0, topY - 0.6)
+                const creditPos = vec2(0, topY - 0.9)
+
+                ez.save()
+                ez.ctx.shadowColor = "rgba(0,0,0,0.25)"
+                ez.ctx.shadowBlur = 4
+                ez.ctx.shadowOffsetX = 0
+                ez.ctx.shadowOffsetY = 0
+                ez.textWorldScaled("Rotations in Radians & the Dot Product", titlePos, {
+                    fontSize: 3.5,
+                    fontFamily: "'Source Sans Pro', sans-serif",
+                    fontStyle: "bold",
+                    textAlign: "center",
+                    textBaseline: "middle"
+                }).fill("#000000")
+                ez.restore()
+
+                ez.save()
+                ez.ctx.shadowColor = "rgba(0,0,0,0.2)"
+                ez.ctx.shadowBlur = 3
+                ez.ctx.shadowOffsetX = 0
+                ez.ctx.shadowOffsetY = 0
+                ez.textWorldScaled("Part of the physics engine tutorial series created by Majikayo Games", creditPos, {
+                    fontSize: 1.3,
+                    fontFamily: "'Source Sans Pro', sans-serif",
+                    textAlign: "center",
+                    textBaseline: "middle"
+                }).fill("#000000")
+                ez.restore()
+            })()
+
+            // Render physics objects
+            PhysRenderer.render(world)
+            
+            // Draw the dot-product visualization at world (0, 1)
+            dpAngle = (dpAngle + dpRotSpeed * dt) % (Math.PI * 2)
+            drawDotProductViz(vec2(0, 1), dpAngle)
+
+            // Render and update slime if it exists
+            if (slime) {
+                slime.render()
+                slime.preStep(dt)
+            }
+            
+            // Update physics
+            world.step(dt)
+        }
+
+        // Start the animation immediately for debugging
+        ez.callAnimate(update, true)
+        
+        // Enable mouse interaction for physics objects
+        PhysRenderer.initMouseControls(world)
+        
+        // Also start curtain intro
+        playCurtainIntro(canvas)
+    </script>
+</body>
+</html>

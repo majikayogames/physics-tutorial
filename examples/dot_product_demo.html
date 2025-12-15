@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dot Product Visualization</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true)
+
+        let vectorA = vec2(0, 1).rotated(-Math.PI / 8);
+        let vectorB = vec2(1, 0);
+        let dragging = null;
+
+        const data = {
+            "Normalize vectors [N]": true,
+            "Vector A length": parseFloat(vectorA.length().toFixed(5)),
+            "Vector B length": parseFloat(vectorB.length().toFixed(5)),
+            "Display projection": true,
+            _hints: {
+                "Vector A length": { hidden: true },
+                "Vector B length": { hidden: true },
+            }
+        };
+
+        const dataCallbacks = {
+            "Normalize vectors [N]": (value) => {
+                if (value) normalizeVectors();
+            },
+            "Vector A length": (length) => {
+                length = parseFloat(length.toFixed(5));
+                if (Math.abs(vectorA.length() - length) > 0.00001) {
+                    if(data["Normalize vectors [N]"]) {
+                        data["Vector A length"] = 1;
+                        return;
+                    }
+                    vectorA = vectorA.normalized().scaled(length);
+                    data["Vector A length"] = length;
+                }
+            },
+            "Vector B length": (length) => {
+                length = parseFloat(length.toFixed(5));
+                if (Math.abs(vectorB.length()  - length) > 0.00001) {
+                    if(data["Normalize vectors [N]"]) {
+                        data["Vector B length"] = 1;
+                        return;
+                    }
+                    vectorB = vectorB.normalized().scaled(length);
+                    data["Vector B length"] = length;
+                }
+            },
+        };
+
+        ez.gui(data, dataCallbacks, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        });
+
+        ez.onMouseDown(() => {
+            let mousePos = ez.getMousePosWorld();
+            if (mousePos.sub(vectorA).length() < 0.5) {
+                dragging = 'A';
+            } else if (mousePos.sub(vectorB).length() < 0.5) {
+                dragging = 'B';
+            }
+        });
+
+        ez.onMouseUp(() => {
+            dragging = null;
+        });
+
+        ez.onMouseDrag(() => {
+            let mousePos = ez.getMousePosWorld();
+            if (dragging === 'A') {
+                vectorA = mousePos;
+                if (data["Normalize vectors [N]"]) {
+                    vectorA = vectorA.normalized();
+                }
+                data["Vector A length"] = parseFloat(vectorA.length().toFixed(5));
+            } else if (dragging === 'B') {
+                vectorB = mousePos;
+                if (data["Normalize vectors [N]"]) {
+                    vectorB = vectorB.normalized();
+                }
+                data["Vector B length"] = parseFloat(vectorB.length().toFixed(5));
+            }
+        });
+
+        function normalizeVectors() {
+            vectorA = vectorA.normalized();
+            vectorB = vectorB.normalized();
+            data["Vector A length"] = parseFloat(vectorA.length().toFixed(5));
+            data["Vector B length"] = parseFloat(vectorB.length().toFixed(5));
+        }
+
+        function formatNumber(num) {
+            return (num.toFixed(2) === "-0.00" ? "0.00" : num.toFixed(2));
+        }
+
+        function draw() {
+            ez.clear();
+            drawGrid();
+            drawVectors();
+            if (data["Display projection"]) drawProjection();
+            showDotProduct();
+            requestAnimationFrame(draw);
+        }
+
+        function drawGrid() {
+            ez.grid(vec2(1, 1), 50).stroke(0xcccccc);
+        }
+
+        function drawVectors() {
+            ez.arrow(vec2(0, 0), vectorA, 15).fillAndStroke("#FFC04D", "#FFC04D", { lineWidth: 3, lineJoin: "round" });
+            ez.text(`A\n(${formatNumber(vectorA.x)}, ${formatNumber(vectorA.y)})` + (data["Normalize vectors [N]"] ? "" : `\nLength: ${formatNumber(vectorA.length())}`), vectorA.add(vec2(0.0, 0.2)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'bottom' }).fill("#FFC04D");
+            ez.arrow(vec2(0, 0), vectorB, 15).fillAndStroke("#6495ED", "#6495ED", { lineWidth: 3, lineJoin: "round" });
+            ez.text(`B\n(${formatNumber(vectorB.x)}, ${formatNumber(vectorB.y)})` + (data["Normalize vectors [N]"] ? "" : `\nLength: ${formatNumber(vectorB.length())}`), vectorB.add(vec2(0.0, 0.2)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'bottom' }).fill("#6495ED");
+        }
+
+        function drawProjection() {
+            let dotProduct = vectorA.dot(vectorB);
+            let projLength = dotProduct / vectorB.length();
+            let projPoint = vectorB.normalized().scaled(projLength);
+
+            // Dashed line from A towards projected point on B
+            ez.line(vectorA, projPoint, {lineDash: [5, 5]}).stroke("#FFC04D", {lineWidth: 2, globalAlpha: 0.75});
+            
+            // Solid line from the base of B to the projected point to show the length of the projection
+            ez.line(vec2(0, 0), projPoint).stroke("#FFC04D", {lineWidth: 5, globalAlpha: 0.75});
+
+            // Displaying the length of the projection (moved up)
+            ez.text(`Projection Length: ${formatNumber(projLength)}`, vectorA.sub(projPoint).scaled(-1).normalized().scaled(0.5).add(projPoint.scaled(0.5)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 18, textAlign: 'center', fontStyle: "bold" }).fill("#FFC04D");
+        }
+
+        function showDotProduct() {
+            let dotProduct = vectorA.dot(vectorB);
+            const textOptions = {
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontSize: 18,
+                textAlign: "center",
+                textBaseline: "middle",
+                fontStyle: "500"  // Semi-bold
+            };
+            ez.text("Dot Product A • B: " + formatNumber(dotProduct), vec2(0, 1.7), textOptions).fill("black");
+        }
+
+        draw();
+    </script>
+</body>
+
+</html>

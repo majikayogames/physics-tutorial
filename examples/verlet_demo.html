@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Verlet Cloth Demo</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="cloth-renderer.js"></script>
+    <script src="slime-renderer.js"></script>
+    <script>
+        // Basic physics engine with Verlet integration
+
+
+        class Vec2 {
+            constructor(x, y) { this.x = x; this.y = y; }
+            add(other) { return new Vec2(this.x + other.x, this.y + other.y); }
+            sub(other) { return new Vec2(this.x - other.x, this.y - other.y); }
+            scale(scalar) { return new Vec2(this.x * scalar, this.y * scalar); }
+            dot(other) { return this.x * other.x + this.y * other.y; }
+            cross(other) { return this.x * other.y - this.y * other.x; }
+            crossSv(scalar) { return new Vec2(-this.y * scalar, this.x * scalar); } // s x v
+            length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+            normalized() { return (Math.abs(this.x) < 1e-10 && Math.abs(this.y) < 1e-10) ? new Vec2(1, 0) : this.scale(1 / this.length()); }
+            rotate(angle) { const cos = Math.cos(angle); const sin = Math.sin(angle); return new Vec2(this.x * cos - this.y * sin, this.x * sin + this.y * cos); }
+            rotate90CW() { return new Vec2(this.y, -this.x); }
+            min(other) { return new Vec2(Math.min(this.x, other.x), Math.min(this.y, other.y)); }
+            max(other) { return new Vec2(Math.max(this.x, other.x), Math.max(this.y, other.y)); }
+        }
+
+        class PhysObject {
+            constructor(x, y, isStatic = false) {
+                this.position = new Vec2(x, y);
+                this.prevPosition = new Vec2(x, y);
+                this.velocity = new Vec2(0, 0); // For Euler integration
+                this.isStatic = isStatic;
+            }
+
+            step(dt, acceleration, angularAcceleration) {
+                if (this.isStatic) return;
+
+                // Calculate next position using Verlet formula
+                let movementOverDt = this.position.sub(this.prevPosition);
+                movementOverDt = movementOverDt.add(acceleration.scale(dt * dt));
+                const nextPos = this.position.add(movementOverDt);
+
+                // Roll positions forward
+                this.prevPosition = this.position;
+                this.position = nextPos;
+            }
+
+            stepEuler(dt, acceleration) {
+                if (this.isStatic) return;
+
+                // Euler integration: v = v + a*dt, p = p + v*dt
+                this.velocity = this.velocity.add(acceleration.scale(dt));
+                this.position = this.position.add(this.velocity.scale(dt));
+            }
+
+            // Convert from Verlet state (position, prevPosition) to Euler state (position, velocity)
+            convertToEuler(dt) {
+                if (this.isStatic) {
+                    this.velocity = new Vec2(0, 0);
+                    return;
+                }
+                // Calculate velocity from position difference
+                this.velocity = this.position.sub(this.prevPosition).scale(1 / dt);
+            }
+
+            // Convert from Euler state (position, velocity) to Verlet state (position, prevPosition)
+            convertToVerlet(dt) {
+                if (this.isStatic) {
+                    this.prevPosition = this.position;
+                    return;
+                }
+                // Calculate previous position from current velocity
+                this.prevPosition = this.position.sub(this.velocity.scale(dt));
+            }
+        }
+
+        // DistanceConstraint works with Verlet to keep objects at a fixed distance apart
+        class DistanceConstraint {
+            constructor(objA, objB, restLength = null, stiffness = 1) {
+                this.objA = objA;
+                this.objB = objB;
+                this.restLength = restLength !== null ? restLength : objA.position.sub(objB.position).length();
+                this.stiffness = stiffness; // 0..1, where 1 is fully rigid
+            }
+
+            solve(invIterations) {
+                const delta = this.objB.position.sub(this.objA.position);
+                const dist = delta.length();
+                if (dist === 0) return;
+
+                const diff = (dist - this.restLength) / dist * this.stiffness * invIterations;
+                const correction = delta.scale(0.5 * diff);
+
+                if (!this.objA.isStatic) {
+                    this.objA.position = this.objA.position.add(correction);
+                }
+                if (!this.objB.isStatic) {
+                    this.objB.position = this.objB.position.sub(correction);
+                }
+            }
+
+            solveEuler(dt, invIterations) {
+                const delta = this.objB.position.sub(this.objA.position);
+                const dist = delta.length();
+                if (dist === 0) return;
+
+                const n = delta.scale(1 / dist); // normalized direction
+                const relativeVel = this.objB.velocity.sub(this.objA.velocity);
+                const relVelAlongN = relativeVel.dot(n);
+                const positionalError = dist - this.restLength;
+
+                // Baumgarte stabilization term to correct positional drift
+                const biasFactor = 0.2; // 0..1, higher = stiffer
+                const bias = (biasFactor * positionalError) / dt;
+
+                // Compute corrective impulse scalar (assuming unit mass)
+                const lambda = (-(relVelAlongN + bias) * this.stiffness * invIterations);
+
+                // Effective masses (1 for dynamic, 0 for static)
+                const invMassA = this.objA.isStatic ? 0 : 1;
+                const invMassB = this.objB.isStatic ? 0 : 1;
+                const invMassSum = invMassA + invMassB;
+                if (invMassSum === 0) return;
+
+                const impulseMag = lambda / invMassSum;
+                const impulse = n.scale(impulseMag);
+
+                if (!this.objA.isStatic) {
+                    this.objA.velocity = this.objA.velocity.sub(impulse.scale(invMassA));
+                }
+                if (!this.objB.isStatic) {
+                    this.objB.velocity = this.objB.velocity.add(impulse.scale(invMassB));
+                }
+            }
+        }
+
+        class PhysWorld {
+            constructor() {
+                this.objects = [];
+                this.gravity = new Vec2(0, -9.81);
+                this.constraints = [];
+                this.constraintIterations = 5;
+                this.useEuler = false;
+                this._accumulator = 0; // accumulated real time for fixed-step simulation
+            }
+
+            addDistanceConstraint(objA, objB, restLength = null, stiffness = 1) {
+                const c = new DistanceConstraint(objA, objB, restLength, stiffness);
+                this.constraints.push(c);
+                return c;
+            }
+
+            // Switch integration method and convert object states
+            setIntegrationMethod(useEuler, dt = 1/240) {
+                if (this.useEuler === useEuler) return; // No change needed
+                
+                this.useEuler = useEuler;
+                
+                // Convert all objects to the new integration method
+                for (const obj of this.objects) {
+                    if (useEuler) {
+                        obj.convertToEuler(dt);
+                    } else {
+                        obj.convertToVerlet(dt);
+                    }
+                }
+            }
+
+            step(timeElapsedSinceLastCalled = 0, dt = 1 / 240, maxSteps = 10) {
+                // Accumulate time and run a fixed number of substeps independent of refresh rate
+                this._accumulator += timeElapsedSinceLastCalled;
+                const maxAccum = maxSteps * dt;
+                if (this._accumulator > maxAccum) this._accumulator = maxAccum;
+
+                let substeps = 0;
+                while (this._accumulator >= dt) {
+                    if (this.useEuler) {
+                        this.stepEuler(dt);
+                    } else {
+                        this.stepVerlet(dt);
+                    }
+                    this._accumulator -= dt;
+                    substeps++;
+                }
+            }
+
+            stepVerlet(dt) {
+                // Integrate all objects once per sub-step
+                for (const obj of this.objects) {
+                    obj.step(dt, this.gravity, 0);
+                }
+
+                // Handle mouse constraint like VerletJS - set position directly
+                if (selectedNode) {
+                    const mouseWorld = ez.getMousePosWorld();
+                    selectedNode.position = new Vec2(mouseWorld.x, mouseWorld.y);
+                }
+
+                // Apply screen boundary constraints
+                applyScreenBoundaryConstraints();
+
+                // Satisfy constraints (multiple iterations per sub-step)
+                const stepCoef = 1 / this.constraintIterations;
+                for (let iter = 0; iter < this.constraintIterations; iter++) {
+                    for (const c of this.constraints) {
+                        c.solve(stepCoef);
+                    }
+                }
+            }
+
+            stepEuler(dt) {
+                // 1. Apply acceleration (gravity) to velocities
+                for (const obj of this.objects) {
+                    if (!obj.isStatic) {
+                        obj.velocity = obj.velocity.add(this.gravity.scale(dt));
+                    }
+                }
+
+                // 2. Handle mouse drag as velocity correction before constraints
+                if (selectedNode) {
+                    const mouseWorld = ez.getMousePosWorld();
+                    const targetPos = new Vec2(mouseWorld.x, mouseWorld.y);
+                    const posErr = targetPos.sub(selectedNode.position);
+                    // teleport static behavior: treat as kinematic target
+                    selectedNode.velocity = posErr.scale(1 / dt); // drive directly to mouse each frame
+                }
+
+                // 3. Satisfy constraints via velocity impulses (sequential impulses)
+                const stepCoef = 1 / this.constraintIterations;
+                for (let iter = 0; iter < this.constraintIterations; iter++) {
+                    for (const c of this.constraints) {
+                        c.solveEuler(dt, stepCoef);
+                    }
+                }
+
+                // 4. Integrate positions using updated velocities (semi-implicit Euler)
+                for (const obj of this.objects) {
+                    if (!obj.isStatic) {
+                        obj.position = obj.position.add(obj.velocity.scale(dt));
+                    }
+                }
+
+                // 5. Apply screen boundary constraints after position integration
+                applyScreenBoundaryConstraints();
+            }
+        }
+    </script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        let webglCanvas = ez.createCanvasAndAddToPage(undefined, undefined, true)
+        ez.setCanvas(canvas)
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 2.4), vec2(8.36, 6), true)
+
+        // Set full-screen styles for WebGL canvas to match main canvas
+        const syncWebGLCanvas = () => {
+            // Match the main canvas dimensions exactly
+            webglCanvas.width = canvas.width;
+            webglCanvas.height = canvas.height;
+            webglCanvas.style.width = canvas.style.width;
+            webglCanvas.style.height = canvas.style.height;
+            webglCanvas.style.position = canvas.style.position;
+            webglCanvas.style.left = canvas.style.left;
+            webglCanvas.style.top = canvas.style.top;
+            //webglCanvas.style.zIndex = '-1'; // Put WebGL canvas behind the main canvas
+            
+            // Notify curtain renderer of resize
+            if (curtains) {
+                curtains.resize();
+            }
+        };
+
+        // Create curtain renderer
+        let curtains = new CurtainRenderer(webglCanvas)
+        
+        // Sync WebGL canvas initially
+        syncWebGLCanvas();
+        
+        // Use ResizeObserver to watch for canvas size changes (more reliable than window resize)
+        if (window.ResizeObserver) {
+            const resizeObserver = new ResizeObserver(() => {
+                syncWebGLCanvas();
+            });
+            resizeObserver.observe(canvas);
+        } else {
+            // Fallback for older browsers
+            window.addEventListener('resize', syncWebGLCanvas);
+        }
+
+        // Create physics world
+        let world = new PhysWorld()
+
+        // NEW: define colour palette for the slime (only blue enabled for now)
+        const slimeColors = [
+            '#4A90E2', // Blue
+            //'#FF1493', // Hot pink
+            //'#FF4500', // Orange
+            //'#00FF7F', // Goo green
+        ];
+
+        // Helper to create a slime controller with a random colour.
+        // Match the apparent size from the integration_methods demo by using a
+        // higher pixels-per-unit scale (similar to that page's 100px ≈ 1 unit).
+        const createNewSlimeController = () => {
+            const color = slimeColors[Math.floor(Math.random() * slimeColors.length)];
+            return new SlimeController({
+                color,
+                pixelsPerUnit: 100, // was default (60); larger value => bigger slime on screen
+            });
+        };
+
+        // Create initial controller
+        let slimeController = createNewSlimeController();
+
+        // Enable gravity for arcing trajectories
+        world.gravity = new Vec2(0, -9.81)
+
+        // Screen boundary constraints
+        let screenBounds = {
+            topLeft: new Vec2(0, 0),
+            bottomRight: new Vec2(0, 0)
+        }
+
+        function updateScreenBounds() {
+            // Get screen corners in world coordinates
+            const topLeft = ez.screenToWorld(new Vec2(0, 0))
+            const bottomRight = ez.screenToWorld(new Vec2(canvas.width, canvas.height))
+            
+            screenBounds.topLeft = topLeft
+            screenBounds.bottomRight = bottomRight
+        }
+
+        function applyScreenBoundaryConstraints() {
+            const frictionFactor = 0.8 // Reduce velocity by 20% when hitting boundaries
+            
+            for (const obj of world.objects) {
+                if (obj.isStatic) continue // Skip static nodes
+                
+                let hitBoundary = false
+                
+                // Left boundary
+                if (obj.position.x < screenBounds.topLeft.x) {
+                    obj.position.x = screenBounds.topLeft.x
+                    hitBoundary = true
+                }
+                // Right boundary  
+                if (obj.position.x > screenBounds.bottomRight.x) {
+                    obj.position.x = screenBounds.bottomRight.x
+                    hitBoundary = true
+                }
+                // Top boundary (remember Y is flipped in world coordinates)
+                if (obj.position.y > screenBounds.topLeft.y) {
+                    obj.position.y = screenBounds.topLeft.y
+                    hitBoundary = true
+                }
+                // Bottom boundary
+                if (obj.position.y < screenBounds.bottomRight.y) {
+                    obj.position.y = screenBounds.bottomRight.y
+                    hitBoundary = true
+                }
+                
+                // Apply friction when hitting any boundary
+                if (hitBoundary) {
+                    if (world.useEuler) {
+                        // For Euler integration, directly dampen velocity
+                        obj.velocity = obj.velocity.scale(frictionFactor)
+                    } else {
+                        // For Verlet integration, adjust previous position to reduce implied velocity
+                        // Current velocity is implied by: (position - prevPosition)
+                        // To reduce velocity, move prevPosition closer to current position
+                        const impliedVelocity = obj.position.sub(obj.prevPosition)
+                        const dampedVelocity = impliedVelocity.scale(frictionFactor)
+                        obj.prevPosition = obj.position.sub(dampedVelocity)
+                    }
+                }
+            }
+        }
+
+        // ---------------- Cloth parameters & generation ----------------
+        const urlParams = new URLSearchParams(window.location.search)
+        const clothWidth = 37
+        const clothHeight = 18
+        const segX = 0.2
+        const segY = segX
+
+        function createCloth(numX = clothWidth, numY = clothHeight, dx = segX, dy = segY) {
+            world.objects.length = 0
+            world.constraints.length = 0
+
+            // Use letterboxed world coordinates directly
+            // Camera is centered at (0, 2.4) with size (8.36, 6)
+            const worldWidth = 8.36
+            const worldHeight = 6
+            const worldCenterX = 0
+            const worldCenterY = 2.4
+            
+            const startX = worldCenterX - (numX - 1) * dx / 2
+            const startY = 5
+
+            const stiffness = 0.075
+
+            for (let y = 0; y < numY; y++) {
+                for (let x = 0; x < numX; x++) {
+                    const node = new PhysObject(startX + x * dx, startY - y * dy, y === 0 && x % 6 === 0)
+                    world.objects.push(node)
+
+                    // horizontal constraint
+                    if (x > 0) {
+                        const leftNode = world.objects[world.objects.length - 2]
+                        world.addDistanceConstraint(node, leftNode, dx, stiffness)
+                    }
+                    // vertical constraint
+                    if (y > 0) {
+                        const aboveNode = world.objects[(y - 1) * numX + x]
+                        world.addDistanceConstraint(node, aboveNode, dy, stiffness)
+                    }
+                }
+            }
+        }
+
+        // Initialize screen bounds
+        updateScreenBounds()
+
+        // Mouse interaction for curtain renderer
+        let mouseWorldPos = new Vec2(-1000, -1000)
+        let closestNode = null
+        let lastHoveredNode = null
+        let lastHoverTime = 0
+        const mouseInfluenceRadius = 0.5 // world units
+        const pickRadius = Math.max(segX, segY) * 0.5 // Same as drag detection
+
+        // Track mouse position
+        ez.onMouseMove(() => {
+            mouseWorldPos = ez.getMousePosWorld()
+        })
+        
+        // Handle mouse leaving window
+        canvas.addEventListener('mouseleave', () => {
+            mouseWorldPos = new Vec2(-1000, -1000)
+        })
+        
+        // Touch support: tap and drag to grab the cloth (mobile)
+        function getWorldFromTouchEvent(e) {
+            const touch = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0])
+            if (!touch) return null
+            const rect = (e.currentTarget || e.target).getBoundingClientRect()
+            const x = touch.clientX - rect.left
+            const y = touch.clientY - rect.top
+            return ez.screenToWorld(new Vec2(x, y))
+        }
+        
+        function addTouchHandlers(el) {
+            if (!el) return
+            el.addEventListener('touchstart', (e) => {
+                e.preventDefault()
+                const world = getWorldFromTouchEvent(e)
+                if (world) {
+                    mouseWorldPos = world
+                    updateClosestNode()
+                    let nodeToSelect = closestNode
+                    if (!nodeToSelect && lastHoveredNode) {
+                        const timeSinceLastHover = Date.now() - lastHoverTime
+                        if (timeSinceLastHover < 200) {
+                            nodeToSelect = lastHoveredNode
+                        }
+                    }
+                    selectedNode = nodeToSelect
+                }
+            }, { passive: false })
+            
+            el.addEventListener('touchmove', (e) => {
+                e.preventDefault()
+                const world = getWorldFromTouchEvent(e)
+                if (world) {
+                    mouseWorldPos = world
+                    updateClosestNode()
+                }
+            }, { passive: false })
+            
+            const clearTouchSelection = () => {
+                selectedNode = null
+                mouseWorldPos = new Vec2(-1000, -1000)
+            }
+            
+            el.addEventListener('touchend', (e) => {
+                e.preventDefault()
+                clearTouchSelection()
+            }, { passive: false })
+            el.addEventListener('touchcancel', (e) => {
+                e.preventDefault()
+                clearTouchSelection()
+            }, { passive: false })
+        }
+        
+        // Attach touch handlers to both canvases to ensure interaction regardless of stacking order
+        addTouchHandlers(canvas)
+        addTouchHandlers(webglCanvas)
+        
+        // Point-in-polygon and convex-hull are now encapsulated in slime-controller.js
+        
+        // Function to update closest node selection
+        function updateClosestNode() {
+            // This function now only handles the cloth scene.
+            if (controls["Scene"] !== "Cloth") {
+                closestNode = null;
+                return;
+            }
+
+            // Only update if mouse is in window and we have a valid position
+            if (mouseWorldPos.x === -1000 && mouseWorldPos.y === -1000) {
+                closestNode = null
+                return
+            }
+            
+            let closest = null
+            let closestDistSq = Infinity
+            
+            // For cloth scene, use quad-based selection for better UX
+            if (world.objects.length === clothWidth * clothHeight) {
+                // First try: Check all quads to find the nearest corner if mouse is inside any quad
+                for (let y = 0; y < clothHeight - 1; y++) {
+                    for (let x = 0; x < clothWidth - 1; x++) {
+                        // Get the 4 corners of this quad
+                        const corners = [
+                            world.objects[y * clothWidth + x],           // top-left
+                            world.objects[y * clothWidth + x + 1],       // top-right
+                            world.objects[(y + 1) * clothWidth + x],     // bottom-left
+                            world.objects[(y + 1) * clothWidth + x + 1]  // bottom-right
+                        ];
+                        
+                        // Safety check - ensure all corners exist
+                        if (!corners[0] || !corners[1] || !corners[2] || !corners[3]) continue;
+                        
+                        // Check if mouse is inside this quad (rough check)
+                        const tl = corners[0].position;
+                        const br = corners[3].position;
+                        const mouseInQuad = mouseWorldPos.x >= Math.min(tl.x, br.x) && 
+                                           mouseWorldPos.x <= Math.max(tl.x, br.x) &&
+                                           mouseWorldPos.y >= Math.min(tl.y, br.y) && 
+                                           mouseWorldPos.y <= Math.max(tl.y, br.y);
+                        
+                        if (mouseInQuad) {
+                            // Find closest corner of this quad
+                            for (const corner of corners) {
+                                if (corner.isStatic) continue;
+                                const d = corner.position.sub(mouseWorldPos);
+                                const distSq = d.x * d.x + d.y * d.y;
+                                if (distSq < closestDistSq) {
+                                    closest = corner;
+                                    closestDistSq = distSq;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Fallback: if no specific scene logic matched, use radius-based selection
+            if (!closest) {
+                const pickRadiusSq = pickRadius * pickRadius;
+                
+                for (const node of world.objects) {
+                    if (node.isStatic) continue;
+                    const d = node.position.sub(mouseWorldPos);
+                    const distSq = d.x * d.x + d.y * d.y;
+                    if (distSq < pickRadiusSq && distSq < closestDistSq) {
+                        closest = node;
+                        closestDistSq = distSq;
+                    }
+                }
+            }
+            
+            // Track last hovered node with timestamp
+            if (closest && closest !== lastHoveredNode) {
+                lastHoveredNode = closest
+                lastHoverTime = Date.now()
+            }
+            
+            closestNode = closest
+        }
+
+        // Convert physics simulation to curtain vertex grid
+        function createVertexGrid() {
+            const vertexGrid = []
+
+            // Safety check - ensure we have enough objects for the cloth grid
+            const expectedNodes = clothWidth * clothHeight
+            if (world.objects.length < expectedNodes) {
+                console.warn(`Not enough objects for cloth grid. Expected: ${expectedNodes}, Got: ${world.objects.length}`)
+                // Return empty grid or recreate cloth
+                setupClothScene()
+            }
+
+            for (let y = 0; y < clothHeight; y++) {
+                vertexGrid[y] = []
+                for (let x = 0; x < clothWidth; x++) {
+                    const nodeIndex = y * clothWidth + x
+                    const node = world.objects[nodeIndex]
+                    
+                    if (!node) {
+                        console.error(`Missing node at index ${nodeIndex}`)
+                        continue
+                    }
+
+                    // Convert world coordinates to screen coordinates
+                    const screenPos = ez.worldToScreen(node.position)
+
+                    // Calculate distance to mouse for opacity (in world coordinates)
+                    const distToMouse = node.position.sub(mouseWorldPos).length()
+                    const opacity = Math.max(0.025, Math.min(1.0, 1.0 - (distToMouse / mouseInfluenceRadius)))
+
+                    // Stage curtain lighting based on constraint deformation (like the reference)
+                    let deformation = 0
+                    let neighborCount = 0
+                    
+                    // Calculate average deformation from neighboring constraints
+                    // Check horizontal neighbors
+                    if (x > 0) {
+                        const leftNode = world.objects[nodeIndex - 1]
+                        const currentDist = node.position.sub(leftNode.position).length()
+                        const restDist = segX
+                        deformation += Math.abs(currentDist - restDist) / restDist
+                        neighborCount++
+                    }
+                    if (x < clothWidth - 1) {
+                        const rightNode = world.objects[nodeIndex + 1]
+                        const currentDist = node.position.sub(rightNode.position).length()
+                        const restDist = segX
+                        deformation += Math.abs(currentDist - restDist) / restDist
+                        neighborCount++
+                    }
+                    
+                    // Check vertical neighbors
+                    if (y > 0) {
+                        const aboveNode = world.objects[nodeIndex - clothWidth]
+                        const currentDist = node.position.sub(aboveNode.position).length()
+                        const restDist = segY
+                        deformation += Math.abs(currentDist - restDist) / restDist
+                        neighborCount++
+                    }
+                    if (y < clothHeight - 1) {
+                        const belowNode = world.objects[nodeIndex + clothWidth]
+                        const currentDist = node.position.sub(belowNode.position).length()
+                        const restDist = segY
+                        deformation += Math.abs(currentDist - restDist) / restDist
+                        neighborCount++
+                    }
+                    
+                    // Average deformation
+                    if (neighborCount > 0) {
+                        deformation /= neighborCount
+                    }
+                    
+                    // Clamp and scale deformation for lighting
+                    deformation = Math.min(deformation, 1.0) // Cap at 100% deformation
+                    
+                    // BASE CURTAIN COLOURS (deep burgundy) --------------------
+                    const baseRed = 0.55
+                    const baseGreen = 0.07
+                    const baseBlue = 0.12
+                    
+                    // -------------------------------------------------------------------
+                    // Improved lighting model for stage curtain appearance
+                    // -------------------------------------------------------------------
+                    // 1. Ambient base
+                    let intensity = 0.95  // overall ambient level (brightened even more)
+                    
+                    // 2. Large vertical folds – deeper shadows & brighter crests
+                    // Pins are at x % 6 === 0, so we have pins at x = 0, 6, 12, 18, 24, 30, 36
+                    // That's 7 pins across 37 width, so ~6 gaps between pins
+                    const pinSpacing = 6                              // pins every 6 units
+                    const foldPhase = (x / pinSpacing) * Math.PI * 2  // 2π per pin spacing for full wave cycle
+                    // Offset phase so pinned points (x % 6 === 0) align with troughs (dark parts)
+                    const foldWave  = Math.cos(foldPhase)             // -1..+1, cos starts at peak (x=0)
+                    // Use the raw wave for smoother transitions, reduce contrast
+                    intensity += foldWave * -0.08                     // -0.08 to +0.08 range, inverted so pins are dark
+                    
+                    // 3. Sub-fold wrinkles – subtle higher-frequency variation
+                    const wrinkle = Math.sin(foldPhase * 4.0 + y * 0.3) * 0.5 + 0.5 // 0..1
+                    intensity += (wrinkle - 0.5) * 0.08              // ±0.04 range (reduced)
+                    
+                    // 4. Foot-lights from below – fade with height
+                    const vPos = y / (clothHeight - 1)               // 0 (top) .. 1 (bottom)
+                    intensity += (1.0 - vPos) * 0.08                // up to +0.08 near bottom
+                    
+                    // 5. Local deformation (wrinkles/folds) – darken where stretched
+                    intensity *= (1.0 - 0.3 * deformation)           // reduce up to 30% when fully deformed (reduced)
+                    
+                    // Clamp final intensity to [0,1]
+                    intensity = Math.min(1.0, Math.max(0.0, intensity))
+                    
+                    // Apply composite lighting to base colour
+                    const red   = baseRed   * intensity
+                    const green = baseGreen * intensity
+                    const blue  = baseBlue  * intensity
+
+                    vertexGrid[y][x] = {
+                        x: screenPos.x,
+                        y: screenPos.y,
+                        opacity: opacity,
+                        color: [red, green, blue]
+                    }
+                }
+            }
+
+            return vertexGrid
+        }
+
+        // GUI controls to tweak cloth and regenerate
+        const controls = {
+            "Scene": ["Cloth", "Slime"],
+            "Use Euler": false
+        }
+
+        // Scene setup functions
+        function setupClothScene() {
+            // When switching to cloth, hide the slime.
+            slimeController.hide();
+            // Make sure cloth canvases are visible
+            canvas.style.display = 'block';
+            webglCanvas.style.display = 'block';
+            
+            // Re-create the cloth physics objects
+            createCloth();
+        }
+
+        function setupSlimeScene() {
+            // Hide the cloth's webgl canvas. The main 2D canvas remains for the grid.
+            webglCanvas.style.display = 'none';
+            curtains.clearCanvas(); // Clear the last rendered frame of the cloth
+            if (slimeController) {
+                slimeController.hide();
+            }
+            slimeController = createNewSlimeController();
+            slimeController.show();
+        }
+
+        // Rendering methods
+        function renderClothScene() {
+            // Update curtain with physics simulation
+            const vertexGrid = createVertexGrid()
+            
+            curtains.updateCurtain('cloth', vertexGrid)
+
+            // Update hexagon marker - show for selected node (dragging) or closest node (hover)
+            const targetNode = selectedNode || closestNode
+            if (targetNode) {
+                const screenPos = ez.worldToScreen(targetNode.position)
+                // Black hexagon for both hover and drag
+                const color = [0.0, 0.0, 0.0, 1.0] // Black
+                curtains.setHexagonMarker({ x: screenPos.x, y: screenPos.y }, color)
+            } else {
+                curtains.clearHexagonMarker()
+            }
+
+            // Render curtain
+            curtains.render()
+        }
+
+        let slimeEyeTimeout = null
+
+        ez.gui(controls, {
+            "Scene": (val) => {
+                switch (val) {
+                    case "Cloth":
+                        setupClothScene()
+                        break
+                    case "Slime":
+                        setupSlimeScene()
+                        clearTimeout(slimeEyeTimeout)
+                        slimeEyeTimeout = setTimeout(() => {
+                            slimeController.setEyes(controls["Use Euler"] ? "sleepy" : "normal");
+                        }, 500);
+                        break
+                }
+            },
+            "Use Euler": (val) => {
+                // Apply to cloth physics world
+                world.setIntegrationMethod(val, 1/240);
+                
+                // Apply to slime controller
+                slimeController.setIntegrationMethod(val);
+
+                clearTimeout(slimeEyeTimeout)
+                slimeEyeTimeout = setTimeout(() => {
+                    slimeController.setEyes(val ? "sleepy" : "normal");
+                }, 200);
+            }
+        }, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        })
+
+        // Main animation loop
+        function update(dt) {
+            ez.letterBoxCamera(vec2(0, 2.4), vec2(8.36, 6), true)
+            
+            // Update screen bounds after camera setup
+            updateScreenBounds()
+            
+            // Check if integration method should be switched for cloth
+            world.setIntegrationMethod(controls["Use Euler"], 1/240);
+            
+            // Check if integration method should be switched for slime
+            slimeController.setIntegrationMethod(controls["Use Euler"]);
+            
+            // Update closest node selection every frame
+            updateClosestNode()
+            
+            // Physics step with VerletJS-style mouse constraint handling
+            world.step(dt)
+
+            ez.clear()
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            //ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey")
+            //ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey")
+
+            // Render based on selected scene
+            if (controls["Scene"] === "Cloth") {
+                renderClothScene()
+            }
+            // Slime rendering is now handled by its own controller.
+        }
+
+        // Initial setup - create cloth first
+        createCloth() // Create the cloth physics objects first
+
+        // Initialize curtain
+        curtains.createCurtain('cloth', createVertexGrid(), {
+            wireframeColor: [1.0, 1.0, 1.0],
+            outlineColor: [0.3, 0.05, 0.08, 1.0]
+        })
+
+        // Now set up the cloth scene properly
+        setupClothScene()
+
+        // Ensure cloth is rendered from the start
+        controls["Scene"] = "Cloth"
+
+        // Start the animation
+        ez.callAnimate(update, true)
+
+        // ---------------- Mouse drag interaction ----------------
+        let selectedNode = null
+
+        ez.onMouseDown(() => {
+            // Use the same node that's currently being hovered (shown with hexagon)
+            let nodeToSelect = closestNode
+            
+            // Fallback: if no current hover but we had one recently (within 200ms), use that
+            if (!nodeToSelect && lastHoveredNode) {
+                const timeSinceLastHover = Date.now() - lastHoverTime
+                if (timeSinceLastHover < 200) { // 0.2 seconds
+                    nodeToSelect = lastHoveredNode
+                }
+            }
+            
+            selectedNode = nodeToSelect
+        })
+
+        // Remove the mouse move constraint - let physics step handle it like VerletJS
+
+        const clearSelection = () => { selectedNode = null }
+        ez.onMouseUp(clearSelection)
+        window.addEventListener('blur', clearSelection)
+    </script>
+</body>
+
+</html>

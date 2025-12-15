@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Torque Visualization – Rotating Particle</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+    <style>
+        body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #f0f0f0; }
+        canvas { display: block; background-color: white; }
+    </style>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage({ antialias: true, alpha: false, targetFPS: 60 });
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 0), vec2(10, 6), true);
+
+        let radius = 1.0;                 // m
+        let forceMagnitude = 0.05;         // N (always perpendicular)
+        const mass = 1.0;                 // kg (kept constant)
+
+        let particleAngle = Math.PI / 2;  // rad (start pointing up)
+        let angularVelocity = 0;          // rad / s – starts from rest
+        let radiusVector = vec2(0, radius);
+
+        let dragging = null;              // for mouse interaction
+        let pathPoints = [];              // { pos: vec2, alpha: number }
+
+        // Visual overlay modes (purely visual)
+        const boxModes = ["Normal", "Particle Box", "Rigid Body"];
+        let boxMode = boxModes[0];
+        let particleOverlayAlpha = 0;     // smooth fade-in/out state [0,1]
+        let rigidOverlayAlpha = 0;        // smooth fade-in/out state [0,1]
+
+        // Auto-reset mechanism
+        let simulationTime = 0;           // total simulation time
+        let lastGuiChangeTime = 0;        // when user last changed GUI
+        let guiDelayActive = false;       // whether to delay reset due to recent GUI changes
+        const maxSimulationTime = 20;    // seconds before auto-reset
+        const guiDelayDuration = 3;      // seconds to delay reset after GUI change
+
+        const data = {
+            "Force (F)": forceMagnitude,
+            "Radius (r)": radius,
+            "Show box [B]": ["Normal", "Particle Box", "Rigid Body"],
+            _hints: {
+                "Radius (r)": { min: 0.1, max: 3, step: 0.1 },
+                "Force (F)": { min: -20, max: 20, step: 0.1 },
+                "Show box [B]": { hidden: true },
+            }
+        };
+
+        const dataCallbacks = {
+            "Force (F)": (v) => { 
+                forceMagnitude = v; 
+                // Track GUI change and activate delay if simulation is about to end
+                if (simulationTime > maxSimulationTime - guiDelayDuration) {
+                    lastGuiChangeTime = simulationTime;
+                    guiDelayActive = true;
+                }
+            },
+            "Radius (r)": (v) => {
+                let oldRadius = radius;
+                radius = v;
+                radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle));
+                
+                // Scale existing path points to new radius instead of clearing them
+                if (oldRadius > 0 && pathPoints.length > 0) {
+                    let scaleFactor = radius / oldRadius;
+                    pathPoints.forEach(point => {
+                        point.pos = point.pos.scaled(scaleFactor);
+                    });
+                }
+                
+                // Track GUI change and activate delay if simulation is about to end
+                if (simulationTime > maxSimulationTime - guiDelayDuration) {
+                    lastGuiChangeTime = simulationTime;
+                    guiDelayActive = true;
+                }
+            }
+        ,
+            "Show box [B]": (v) => {
+                boxMode = v;
+            }
+        };
+
+        ez.gui(
+            data,
+            dataCallbacks,
+            {
+                theme: "minimalist",
+                darkMode: (() => {
+                    const urlParams = new URLSearchParams(window.location.search);
+                    return urlParams.get("theme") === "dark";
+                })(),
+                hideControlsButton: true,
+                width: 300,
+            }
+        );
+
+        ez.onMouseDown(() => {
+            const mousePos = ez.getMousePosWorld();
+            if (mousePos.sub(radiusVector).length() < 0.3) dragging = true;
+        });
+        ez.onMouseUp(() => (dragging = false));
+        ez.onMouseDrag(() => {
+            if (!dragging) return;
+            const mousePos = ez.getMousePosWorld();
+            let oldRadius = radius;
+            radius = Math.max(0.05, mousePos.length());
+            particleAngle = Math.atan2(mousePos.y, mousePos.x);
+            radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle));
+            data["Radius (r)"] = parseFloat(radius.toFixed(3));
+            
+            // Scale existing path points to new radius instead of clearing them
+            if (oldRadius > 0 && pathPoints.length > 0) {
+                let scaleFactor = radius / oldRadius;
+                pathPoints.forEach(point => {
+                    point.pos = point.pos.scaled(scaleFactor);
+                });
+            }
+            
+            // Track mouse interaction and activate delay if simulation is about to end
+            if (simulationTime > maxSimulationTime - guiDelayDuration) {
+                lastGuiChangeTime = simulationTime;
+                guiDelayActive = true;
+            }
+        });
+
+        function format(num, digits = 2) {
+            return num.toFixed(digits).replace("-0." + "0".repeat(digits), "0." + "0".repeat(digits));
+        }
+
+        function update(dt) {
+            // Cap dt to prevent large jumps when tabbing out and back in
+            dt = Math.min(dt, 1/30); // Cap at 30 FPS equivalent
+
+            // Update simulation time
+            simulationTime += dt;
+
+            // Physics – torque → angular acceleration → angular velocity
+            const angularAcceleration = radius > 1e-6 ? -forceMagnitude / (mass * radius) : 0; // α = τ/I, τ = rF, I = m r² (negative for clockwise)
+            angularVelocity += angularAcceleration * dt;
+            particleAngle += angularVelocity * dt;
+
+            radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle));
+
+            if (pathPoints.length === 0 || pathPoints[pathPoints.length - 1].pos.sub(radiusVector).length() > 0.05) {
+                pathPoints.push({ pos: vec2(radiusVector.x, radiusVector.y), alpha: 1.0 });
+            }
+            const fadeTime = 2; // seconds until completely faded
+            for (let i = pathPoints.length - 1; i >= 0; i--) {
+                pathPoints[i].alpha -= dt / fadeTime;
+                if (pathPoints[i].alpha <= 0) pathPoints.splice(i, 1);
+            }
+
+            // Auto-reset logic
+            if (simulationTime > maxSimulationTime) {
+                // Check if we should delay reset due to recent GUI changes
+                const timeSinceGuiChange = simulationTime - lastGuiChangeTime;
+                const shouldDelayReset = guiDelayActive && timeSinceGuiChange < guiDelayDuration;
+                
+                // Additional condition: only reset if angular velocity is significant
+                const hasSignificantRotation = Math.abs(angularVelocity) > 5;
+                
+                if (!shouldDelayReset && hasSignificantRotation) {
+                    // Reset simulation state
+                    simulationTime = 0;
+                    particleAngle = Math.PI / 2;  // start pointing up
+                    angularVelocity = 0;          // starts from rest
+                    radiusVector = vec2(0, radius);
+                    pathPoints = [];              // clear trail
+                    guiDelayActive = false;       // reset delay flag
+                }
+            }
+
+            // Force vector (tangent direction) – constant length for visualization
+            const tangentDir = radiusVector.normalized().rotated(-Math.PI / 2);
+            const forceDisplayLength = 0.6; // world units, adjust if desired
+            const forceVecDisplay = tangentDir.scaled(forceDisplayLength * Math.sign(forceMagnitude));
+
+            ez.clear();
+            drawGrid();
+            drawCircularPath();
+            drawOverlay(dt);
+            drawTrail();
+            drawVectors(forceVecDisplay, tangentDir);
+            drawLabels();
+        }
+
+        function drawGrid() {
+            ez.grid(vec2(1, 1), 50).stroke(0xcccccc);
+        }
+
+        function drawOverlay(dt) {
+            // Animate overlay alphas toward targets
+            const fadeDuration = 0.7; // seconds
+            const particleTarget = (boxMode === "Particle Box") ? 1 : 0;
+            const rigidTarget = (boxMode === "Rigid Body") ? 1 : 0;
+
+            if (particleOverlayAlpha !== particleTarget) {
+                const dir = particleTarget > particleOverlayAlpha ? 1 : -1;
+                particleOverlayAlpha = Math.max(0, Math.min(1, particleOverlayAlpha + dir * dt / fadeDuration));
+            }
+            if (rigidOverlayAlpha !== rigidTarget) {
+                const dir = rigidTarget > rigidOverlayAlpha ? 1 : -1;
+                rigidOverlayAlpha = Math.max(0, Math.min(1, rigidOverlayAlpha + dir * dt / fadeDuration));
+            }
+
+            if ((particleOverlayAlpha <= 0 && rigidOverlayAlpha <= 0) || radius <= 0.01) return;
+
+            // Endpoints of the four rods (cross), rotating with the particle
+            const p0 = radiusVector;                          // current particle
+            const p1 = radiusVector.rotated(Math.PI / 2);
+            const p2 = radiusVector.rotated(Math.PI);
+            const p3 = radiusVector.rotated(3 * Math.PI / 2);
+
+            // Particle Box overlay (rods + square + X + corner dots)
+            if (particleOverlayAlpha > 0) {
+                const rodColor = "#444";
+                const edgeColor = "#888";
+                const xColor = "#666";
+                const lwRod = 1.5;
+                const lwEdge = 1.0;
+
+                for (const p of [p1, p2, p3]) {
+                    ez.line(vec2(0, 0), p).stroke(rodColor, { lineWidth: lwRod, globalAlpha: particleOverlayAlpha });
+                }
+                ez.line(p0, p1).stroke(edgeColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                ez.line(p1, p2).stroke(edgeColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                ez.line(p2, p3).stroke(edgeColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                ez.line(p3, p0).stroke(edgeColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                ez.line(p0, p2).stroke(xColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                ez.line(p1, p3).stroke(xColor, { lineWidth: lwEdge, globalAlpha: particleOverlayAlpha });
+                const cornerRadius = 0.08;
+                for (const p of [p1, p2, p3]) {
+                    ez.circle(p, cornerRadius).fill("#000000", { globalAlpha: particleOverlayAlpha });
+                }
+            }
+
+            // Rigid Body overlay (solid pink square)
+            if (rigidOverlayAlpha > 0) {
+                const side = Math.SQRT2 * radius; // Inscribed square in circle of radius
+                const angle = particleAngle + Math.PI / 4; // Align corners with p0..p3
+                ez.rect(vec2(0, 0), [side, side], angle).fillAndStroke("#FFB3BAEE", "#2F3437", { globalAlpha: rigidOverlayAlpha });
+            }
+        }
+
+        function drawCircularPath() {
+            if (radius > 0.05) ez.circle(vec2(0, 0), radius).stroke("#aaaaaa66", { lineWidth: 1, lineDash: [5, 5] });
+        }
+
+        function drawTrail() {
+            if (pathPoints.length < 2) return;
+            for (let i = 0; i < pathPoints.length - 1; i++) {
+                const a = Math.min(pathPoints[i].alpha, pathPoints[i + 1].alpha);
+                ez.line(pathPoints[i].pos, pathPoints[i + 1].pos).stroke("#0077cc", { lineWidth: 2, globalAlpha: a });
+            }
+            // Extend the trail to the current particle position to avoid a visible gap
+            const last = pathPoints[pathPoints.length - 1];
+            ez.line(last.pos, radiusVector).stroke("#0077cc", { lineWidth: 2, globalAlpha: last.alpha });
+        }
+
+        function drawVectors(forceVecDisplay, tangentDir) {
+            ez.circle(vec2(0, 0), 0.03).fill(0x333333);
+            // Fade out the original rod and particle in Rigid Body mode
+            const baseAlpha = 1 - rigidOverlayAlpha;
+            ez.line(vec2(0, 0), radiusVector).stroke("#000000", { lineWidth: 1, globalAlpha: baseAlpha });
+            // Particle at the end of the radius line
+            ez.circle(radiusVector, 0.08).fill("black", { globalAlpha: baseAlpha });
+            // Force arrow drawn behind the particle – constant size, black outline only
+            const particleRadius = 0.08;
+            // Flip arrow to other side when force is negative
+            const arrowOffset = tangentDir.scaled(particleRadius * Math.sign(forceMagnitude));
+            const arrowStart = radiusVector.sub(forceVecDisplay).sub(arrowOffset);
+            const arrowEnd = radiusVector.sub(arrowOffset);
+            ez.arrow(arrowStart, arrowEnd, 10).stroke("#000000", { lineWidth: 1 });
+        }
+
+        function drawLabels() {
+            const ts = { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 14, textAlign: "center", textBaseline: "middle" };
+            const rColor = "#C70039", fColor = "#006400";
+
+            const rLabelPos = radiusVector.scaled(0.5).add(radiusVector.normalized().rotated(-Math.PI / 2).scaled(0.2));
+            ez.textBuffered("r", rLabelPos, ts).fill("black", { globalAlpha: 1 - rigidOverlayAlpha });
+
+            const tangentDir = radiusVector.normalized().rotated(-Math.PI / 2);
+            const fLabelPos = radiusVector.add(radiusVector.normalized().scaled(0.35));
+            //ez.textBuffered("F\n", fLabelPos, ts).fill("black");
+            ez.textBuffered(`F\n${format(forceMagnitude)} N`, fLabelPos, { ...ts, fontSize: 12 }).fill("black");
+
+            // Calculate linear velocity: v = ω × r
+            const linearVelocity = Math.abs(angularVelocity * radius);
+            // Keep ω text fully visible; fade only ω·r in rigid mode
+            ez.text(`ω = ${format(angularVelocity)} rad/s`, vec2(0, 2.4), { ...ts, fontSize: 16 }).fill("black");
+            ez.text(`ω⋅r = linear velocity = ${format(linearVelocity)} m/s`, vec2(0, 2.1), { ...ts, fontSize: 16 }).fill("black", { globalAlpha: 1 - rigidOverlayAlpha });
+        }
+
+        // Start the animation with ez.callAnimate
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>

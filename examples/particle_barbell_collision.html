@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Barbell Collision: Particle vs Rigid Body Energy</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+  <script src="ezdraw.js"></script>
+  <script src="../simple_phys.js"></script>
+  <script>
+    class WeldConstraint extends Constraint {
+      constructor(bodyA, bodyB, worldAnchor = null, linearHertz = 0, linearDampingRatio = 0, angularHertz = 0, angularDampingRatio = 0) {
+        super(bodyA, bodyB);
+        
+        // If no world anchor provided, use the midpoint between body centers
+        if (worldAnchor === null) {
+          worldAnchor = bodyA.position.add(bodyB.position).scale(0.5);
+        }
+        
+        // Local anchor points
+        this.localA = bodyA.worldToLocal(worldAnchor);
+        this.localB = bodyB.worldToLocal(worldAnchor);
+        
+        // Reference angle between bodies
+        this.referenceAngle = bodyB.rotation - bodyA.rotation;
+        
+        // Spring-damper parameters
+        this.linearHertz = linearHertz;
+        this.linearDampingRatio = linearDampingRatio;
+        this.angularHertz = angularHertz;
+        this.angularDampingRatio = angularDampingRatio;
+        
+        // Impulse accumulators for warm starting
+        this.linearImpulse = new Vec2(0, 0);
+        this.angularImpulse = 0;
+        
+        // Computed values updated each frame
+        this.rA = new Vec2(0, 0);
+        this.rB = new Vec2(0, 0);
+        this.K = [[0, 0], [0, 0]]; // Linear mass matrix
+        this.axialMass = 0; // Angular mass
+        
+        // Softness parameters
+        this.linearSoftness = { massScale: 1, impulseScale: 0, biasRate: 0 };
+        this.angularSoftness = { massScale: 1, impulseScale: 0, biasRate: 0 };
+        
+        // Inverse masses/inertias
+        this.invMassA = bodyA.isStatic ? 0 : 1 / bodyA.mass;
+        this.invMassB = bodyB.isStatic ? 0 : 1 / bodyB.mass;
+        this.invIA = bodyA.isStatic ? 0 : 1 / bodyA.momentOfInertia;
+        this.invIB = bodyB.isStatic ? 0 : 1 / bodyB.momentOfInertia;
+      }
+      
+      // Helper to compute soft constraint parameters
+      makeSoft(hertz, dampingRatio, dt) {
+        if (hertz <= 0) {
+          return { massScale: 1, impulseScale: 0, biasRate: 60 }; // Default stiff constraint
+        }
+        
+        const omega = 2 * Math.PI * hertz;
+        const d = 2 * dampingRatio * omega;
+        const k = omega * omega;
+        const h = dt;
+        
+        const a = d + k * h;
+        const gamma = a > 0 ? 1 / (h * a) : 0;
+        const beta = k * h * gamma;
+        
+        return {
+          massScale: 1 / (1 + gamma),
+          impulseScale: gamma / (1 + gamma),
+          biasRate: beta
+        };
+      }
+      
+      update() {
+        // Update inverse masses/inertias
+        this.invMassA = this.bodyA.isStatic ? 0 : 1 / this.bodyA.mass;
+        this.invMassB = this.bodyB.isStatic ? 0 : 1 / this.bodyB.mass;
+        this.invIA = this.bodyA.isStatic ? 0 : 1 / this.bodyA.momentOfInertia;
+        this.invIB = this.bodyB.isStatic ? 0 : 1 / this.bodyB.momentOfInertia;
+        
+        // Compute anchor points in world space
+        const worldA = this.bodyA.localToWorld(this.localA);
+        const worldB = this.bodyB.localToWorld(this.localB);
+        
+        // Vectors from body centers to anchor points
+        this.rA = worldA.sub(this.bodyA.position);
+        this.rB = worldB.sub(this.bodyB.position);
+        
+        // Compute linear mass matrix K
+        const mA = this.invMassA, mB = this.invMassB;
+        const iA = this.invIA, iB = this.invIB;
+        
+        this.K[0][0] = mA + mB + this.rA.y * this.rA.y * iA + this.rB.y * this.rB.y * iB;
+        this.K[0][1] = -this.rA.y * this.rA.x * iA - this.rB.y * this.rB.x * iB;
+        this.K[1][0] = this.K[0][1];
+        this.K[1][1] = mA + mB + this.rA.x * this.rA.x * iA + this.rB.x * this.rB.x * iB;
+        
+        // Compute angular mass
+        this.axialMass = iA + iB > 0 ? 1 / (iA + iB) : 0;
+      }
+      
+      solve(dt, baumgarteFactor) {
+        // Update softness parameters
+        this.linearSoftness = this.makeSoft(this.linearHertz, this.linearDampingRatio, dt);
+        this.angularSoftness = this.makeSoft(this.angularHertz, this.angularDampingRatio, dt);
+        
+        // Warm start with previous impulses
+        if (this.linearImpulse.length() > 0 || Math.abs(this.angularImpulse) > 0) {
+          this.bodyA.velocity = this.bodyA.velocity.sub(this.linearImpulse.scale(this.invMassA));
+          this.bodyA.angularVelocity -= this.invIA * (this.rA.cross(this.linearImpulse) + this.angularImpulse);
+          
+          this.bodyB.velocity = this.bodyB.velocity.add(this.linearImpulse.scale(this.invMassB));
+          this.bodyB.angularVelocity += this.invIB * (this.rB.cross(this.linearImpulse) + this.angularImpulse);
+        }
+        
+        this.solveAngularConstraint(dt, baumgarteFactor);
+        this.solveLinearConstraint(dt, baumgarteFactor);
+      }
+      
+      solveAngularConstraint(dt, baumgarteFactor) {
+        // Angular constraint: maintain relative angle
+        const currentAngle = this.bodyB.rotation - this.bodyA.rotation;
+        const C = currentAngle - this.referenceAngle; // Angular error
+        
+        let bias = 0;
+        let massScale = 1;
+        let impulseScale = 0;
+        
+        if (this.angularHertz > 0) {
+          bias = this.angularSoftness.biasRate * C;
+          massScale = this.angularSoftness.massScale;
+          impulseScale = this.angularSoftness.impulseScale;
+        } else {
+          // Stiff constraint uses Baumgarte stabilization
+          bias = (baumgarteFactor / dt) * C;
+        }
+        
+        const Cdot = this.bodyB.angularVelocity - this.bodyA.angularVelocity;
+        const impulse = -massScale * this.axialMass * (Cdot + bias) - impulseScale * this.angularImpulse;
+        
+        this.angularImpulse += impulse;
+        
+        this.bodyA.angularVelocity -= this.invIA * impulse;
+        this.bodyB.angularVelocity += this.invIB * impulse;
+      }
+      
+      solveLinearConstraint(dt, baumgarteFactor) {
+        // Linear constraint: maintain anchor points coincident
+        const worldA = this.bodyA.localToWorld(this.localA);
+        const worldB = this.bodyB.localToWorld(this.localB);
+        const C = worldB.sub(worldA); // Position error
+        
+        let bias = new Vec2(0, 0);
+        let massScale = 1;
+        let impulseScale = 0;
+        
+        if (this.linearHertz > 0) {
+          bias = C.scale(this.linearSoftness.biasRate);
+          massScale = this.linearSoftness.massScale;
+          impulseScale = this.linearSoftness.impulseScale;
+        } else {
+          // Stiff constraint uses Baumgarte stabilization
+          bias = C.scale(baumgarteFactor / dt);
+        }
+        
+        // Compute relative velocity at anchor points
+        const vA = this.bodyA.velocity.add(this.rA.crossSv(this.bodyA.angularVelocity));
+        const vB = this.bodyB.velocity.add(this.rB.crossSv(this.bodyB.angularVelocity));
+        const Cdot = vB.sub(vA);
+        
+        // Solve K * impulse = -(Cdot + bias)
+        const b = Cdot.add(bias).scale(-massScale);
+        const impulse = mat2x2Solve(this.K, b);
+        
+        // Add impulse scaling for soft constraints
+        const finalImpulse = new Vec2(
+          impulse.x - impulseScale * this.linearImpulse.x,
+          impulse.y - impulseScale * this.linearImpulse.y
+        );
+        
+        this.linearImpulse = this.linearImpulse.add(finalImpulse);
+        
+        // Apply impulses
+        this.bodyA.velocity = this.bodyA.velocity.sub(finalImpulse.scale(this.invMassA));
+        this.bodyA.angularVelocity -= this.invIA * this.rA.cross(finalImpulse);
+        
+        this.bodyB.velocity = this.bodyB.velocity.add(finalImpulse.scale(this.invMassB));
+        this.bodyB.angularVelocity += this.invIB * this.rB.cross(finalImpulse);
+      }
+    }
+
+    // Calculate center of mass and moment of inertia for a barbell
+    function calculateBarbellProperties(objA, objB) {
+      const totalMass = objA.mass + objB.mass;
+      const centerOfMass = objA.position.scale(objA.mass).add(objB.position.scale(objB.mass)).scale(1 / totalMass);
+
+      // Linear velocity of center of mass
+      const linearVelocity = objA.velocity.scale(objA.mass).add(objB.velocity.scale(objB.mass)).scale(1 / totalMass);
+
+      // Calculate angular velocity
+      const rA = objA.position.sub(centerOfMass);
+      const rB = objB.position.sub(centerOfMass);
+      const vA = objA.velocity.sub(linearVelocity);
+      const vB = objB.velocity.sub(linearVelocity);
+
+      // Angular velocity = (r × v) / |r|²
+      const angularVelocityA = rA.cross(vA) / (rA.dot(rA) + 0.001);
+      const angularVelocityB = rB.cross(vB) / (rB.dot(rB) + 0.001);
+      const angularVelocity = (angularVelocityA + angularVelocityB) * 0.5;
+
+      // Moment of inertia for two point masses: I = m1*r1² + m2*r2²
+      const momentOfInertia = objA.mass * rA.dot(rA) + objB.mass * rB.dot(rB);
+
+      return {
+        centerOfMass,
+        linearVelocity,
+        angularVelocity,
+        momentOfInertia,
+        totalMass
+      };
+    }
+
+    function kineticEnergy(body) {
+      const v2 = body.velocity.length() ** 2;
+      const w2 = body.angularVelocity ** 2;
+      return 0.5 * body.mass * v2 + 0.5 * body.momentOfInertia * w2;
+    }
+  </script>
+  <script>
+    // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+    let canvas = ez.createCanvasAndAddToPage()
+    ez.centerOrigin = true
+    ez.letterBoxCamera(vec2(0, 0), vec2(16, 8), true)
+
+    const world = new PhysWorld();
+    world.gravity = new Vec2(0, 0); // No gravity for this demo
+
+    // Horizontal barbell (comes from left) - aligned with top of vertical barbell
+    const objA = world.addCircle(-6, 1, 0.1, 1, false);
+    const objB = world.addCircle(-4, 1, 0.1, 1, false);
+
+    // Vertical barbell (stationary in center)
+    const objC = world.addCircle(0, 1, 0.1, 1, false);
+    //const objC = world.addBox(0, 1, .3, .3);
+    const objD = world.addCircle(0, -1, 0.1, 1, false);
+
+    [objA, objB, objC, objD].forEach(p => {
+      p.restitution = 1.0;
+      p.friction = 0.5;
+    });
+
+    // Add weld constraints between barbell particles (declare globally for reset access)
+    // Parameters: bodyA, bodyB, worldAnchor, linearHertz, linearDampingRatio, angularHertz, angularDampingRatio
+    let weldAB, weldCD;
+
+    function resetBarbells() {
+      // Reset horizontal barbell - aligned with top of vertical barbell
+      objA.position = new Vec2(-6, 1);
+      objA.velocity = new Vec2(3, 0); // Give it initial velocity
+      objA.angularVelocity = 0;
+      objA.rotation = Math.PI; // Line points left (away from objB)
+      objB.position = new Vec2(-4, 1);
+      objB.velocity = new Vec2(3, 0);
+      objB.angularVelocity = 0;
+      objB.rotation = 0; // Line points right (away from objA)
+
+      // Reset vertical barbell (stationary in center)
+      objC.position = new Vec2(0, 1);
+      objC.velocity = new Vec2(0, 0);
+      objC.angularVelocity = 0;
+      objC.rotation = Math.PI / 2; // Line points up (away from objD)
+      objD.position = new Vec2(0, -1);
+      objD.velocity = new Vec2(0, 0);
+      objD.angularVelocity = 0;
+      objD.rotation = -Math.PI / 2; // Line points down (away from objC)
+      
+      // Remove old constraints if they exist
+      if (weldAB) {
+        const indexAB = world.constraints.indexOf(weldAB);
+        if (indexAB >= 0) world.constraints.splice(indexAB, 1);
+      }
+      if (weldCD) {
+        const indexCD = world.constraints.indexOf(weldCD);
+        if (indexCD >= 0) world.constraints.splice(indexCD, 1);
+      }
+      
+      // Create new weld constraints with current body positions/rotations
+      weldAB = new WeldConstraint(objA, objB, null, 0, 0, 0, 0); // Rigid weld
+      weldCD = new WeldConstraint(objC, objD, null, 0, 0, 0, 0); // Rigid weld
+      world.constraints.push(weldAB);
+      world.constraints.push(weldCD);
+    }
+
+    function drawPhysWorld(world) {
+      // Draw circles like simple_phys_ezdraw_renderer.js
+      for (const obj of world.objects) {
+        const radius = obj.shapes[0].radius;
+        const fillColor = "#BAE1FF"; // Blue color
+        const outlineColor = "#2F3437"; // Dark gray outline
+
+        // Draw the circle with fill and stroke
+        ez.circle(obj.position, radius).fillAndStroke(fillColor + "EE", outlineColor);
+
+        // Draw rotation indicator line (from edge to halfway to center)
+        const angle = obj.rotation;
+        const startX = obj.position.x + radius * Math.cos(angle);
+        const startY = obj.position.y + radius * Math.sin(angle);
+        const endX = obj.position.x + (radius * 0.5) * Math.cos(angle);
+        const endY = obj.position.y + (radius * 0.5) * Math.sin(angle);
+        ez.line(vec2(startX, startY), vec2(endX, endY)).stroke(outlineColor, 2);
+      }
+
+      // Draw springs
+      drawSpring(objA.position, objB.position);
+      drawSpring(objC.position, objD.position);
+    }
+
+    function drawSpring(posA, posB) {
+      const delta = posB.sub(posA);
+      const length = delta.length();
+      const direction = delta.normalized();
+      const perpendicular = direction.rotate90CW();
+
+      const numCoils = 10;
+      const amplitude = 0.15;
+      const flatEndLength = 0.2; // Length of flat ends
+
+      // Calculate positions for flat ends and coiled middle section
+      const flatEndA = posA.add(direction.scale(flatEndLength));
+      const flatEndB = posB.sub(direction.scale(flatEndLength));
+      const coilLength = length - 2 * flatEndLength;
+
+      const points = [];
+
+      // Start with connection point A
+      points.push(posA);
+
+      // Add flat end at A
+      points.push(flatEndA);
+
+      // Add zigzag coils in the middle section
+      for (let i = 1; i < numCoils; i++) {
+        const t = i / numCoils;
+        const basePos = flatEndA.add(direction.scale(t * coilLength));
+        const offset = perpendicular.scale(amplitude * (i % 2 === 0 ? 1 : -1));
+        points.push(basePos.add(offset));
+      }
+
+      // Add flat end at B
+      points.push(flatEndB);
+
+      // End with connection point B
+      points.push(posB);
+
+      // Draw lines connecting all points
+      for (let i = 0; i < points.length - 1; i++) {
+        ez.line(points[i], points[i + 1]).stroke("black");
+      }
+    }
+
+    let timePassed = 0;
+
+    // Initialize with movement
+    resetBarbells();
+
+    // Main animation function
+    function update(dt) {
+      ez.clear()
+
+      timePassed += dt;
+      if (timePassed > 10) {
+        resetBarbells();
+        timePassed = 0;
+      }
+
+      // Draw grid for reference
+      ez.ctx.lineWidth = 1
+      ez.grid(1, 50).stroke(0xbbbbbb)
+
+      world.step(dt, 1 / 600, 10, 0.0);
+
+      drawPhysWorld(world);
+
+      // Calculate energies both ways
+      {
+        // Method 1: Sum of individual particle kinetic energies
+        const energyA = kineticEnergy(objA);
+        const energyB = kineticEnergy(objB);
+        const particleEnergyBarbell1 = energyA + energyB;
+
+        const energyC = kineticEnergy(objC);
+        const energyD = kineticEnergy(objD);
+        const particleEnergyBarbell2 = energyC + energyD;
+
+        // Method 2: Rigid body kinetic energy (linear + angular)
+        const barbell1Props = calculateBarbellProperties(objA, objB);
+        const barbell2Props = calculateBarbellProperties(objC, objD);
+
+        const rigidBodyEnergyBarbell1 = 0.5 * barbell1Props.totalMass * barbell1Props.linearVelocity.length() * barbell1Props.linearVelocity.length() +
+          0.5 * barbell1Props.momentOfInertia * barbell1Props.angularVelocity * barbell1Props.angularVelocity;
+
+        const rigidBodyEnergyBarbell2 = 0.5 * barbell2Props.totalMass * barbell2Props.linearVelocity.length() * barbell2Props.linearVelocity.length() +
+          0.5 * barbell2Props.momentOfInertia * barbell2Props.angularVelocity * barbell2Props.angularVelocity;
+
+        // Display energy values
+        const textOptions = {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 16,
+          textAlign: "left",
+          textBaseline: "middle",
+          fontStyle: "500"
+        };
+
+        ez.text(`Horizontal Barbell:`, vec2(-7.5, 3.5), textOptions).fill("black");
+        ez.text(`  Particle Sum: ${particleEnergyBarbell1.toFixed(2)} J`, vec2(-7.5, 3.2), textOptions).fill("blue");
+        //ez.text(`  Rigid Body: ${rigidBodyEnergyBarbell1.toFixed(2)} J`, vec2(-7.5, 2.9), textOptions).fill("red");
+
+        ez.text(`Vertical Barbell:`, vec2(-7.5, 2.3), textOptions).fill("black");
+        ez.text(`  Particle Sum: ${particleEnergyBarbell2.toFixed(2)} J`, vec2(-7.5, 2.0), textOptions).fill("blue");
+        //ez.text(`  Rigid Body: ${rigidBodyEnergyBarbell2.toFixed(2)} J`, vec2(-7.5, 1.7), textOptions).fill("red");
+
+        const totalParticle = particleEnergyBarbell1 + particleEnergyBarbell2;
+        //const totalRigidBody = rigidBodyEnergyBarbell1 + rigidBodyEnergyBarbell2;
+
+        ez.text(`Total Energy:`, vec2(-7.5, 1.1), textOptions).fill("black");
+        ez.text(`  Particle Sum: ${totalParticle.toFixed(2)} J`, vec2(-7.5, 0.8), textOptions).fill("blue");
+        //ez.text(`  Rigid Body: ${totalRigidBody.toFixed(2)} J`, vec2(-7.5, 0.5), textOptions).fill("red");
+      }
+    }
+
+    // Start the animation
+    ez.callAnimate(update, true);
+  </script>
+</body>
+
+</html> 

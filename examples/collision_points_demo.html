@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>Collision Points Demo</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600&display=swap" />
+    <style>
+        html, body {
+            margin: 0;
+            height: 100%;
+            background: #f4f4f4;
+            font-family: 'Source Sans Pro', sans-serif;
+        }
+        canvas {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 0), vec2(14, 8), true);
+
+        // Disable default renderer mouse controls – we'll provide custom input.
+        PhysRenderer.initMouseControls = () => {};
+
+        const world = new PhysWorld();
+        world.gravity = new Vec2(0, 0);
+
+        const boxA = world.addBox(0, -0.25, 1.8, 1.8);
+        const boxB = world.addBox(0.35, 1.0, 1.8, 1.8);
+
+        const primaryColor = "#FFB3BA"; // pastel pink
+        const secondaryColor = "#BAFFC9"; // mint
+        const outlineColor = "#2F3437";
+
+        boxA._renderColorHint = primaryColor;
+        boxB._renderColorHint = secondaryColor;
+        boxA.rotation = 0;
+        boxB.rotation = -0.17453292519943295; // approximately 10 degrees
+
+        const boxes = [boxA, boxB];
+
+        for (const box of boxes) {
+            box.velocity = new Vec2(0, 0);
+            box.angularVelocity = 0;
+            box.collisionMask = 0; // ignore collisions
+            box.collisionMaskIgnore = 0xFFFFFF;
+        }
+
+        const LINEAR_DAMPING = 5.0;
+        const ANGULAR_DAMPING = 3.0;
+
+        const inputState = {
+            grabbedBox: null,
+            target: null,
+            pointerId: null,
+            grabbedViaTouch: false,
+            hoveredBox: null,
+            grabOffset: null,
+        };
+        const FOLLOW_RATE = 12;
+        const MAX_FOLLOW_SPEED = 18;
+
+        const bounds = {
+            left: -Infinity,
+            right: Infinity,
+            top: Infinity,
+            bottom: -Infinity,
+        };
+
+        updateViewBounds();
+
+        function updateViewBounds() {
+            const topLeft = ez.screenToWorld(vec2(0, 0));
+            const bottomRight = ez.screenToWorld(vec2(canvas.width, canvas.height));
+            bounds.left = Math.min(topLeft.x, bottomRight.x);
+            bounds.right = Math.max(topLeft.x, bottomRight.x);
+            bounds.bottom = Math.min(topLeft.y, bottomRight.y);
+            bounds.top = Math.max(topLeft.y, bottomRight.y);
+        }
+
+        function clampPosition(box, desired) {
+            const halfW = box._boxHints.width / 2;
+            const halfH = box._boxHints.height / 2;
+            return new Vec2(
+                Math.min(Math.max(desired.x, bounds.left + halfW), bounds.right - halfW),
+                Math.min(Math.max(desired.y, bounds.bottom + halfH), bounds.top - halfH)
+            );
+        }
+
+        function worldPosFromEvent(event) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const screenPos = vec2(
+                (event.clientX - rect.left) * scaleX,
+                (event.clientY - rect.top) * scaleY
+            );
+            const worldPos = ez.screenToWorld(screenPos);
+            return new Vec2(worldPos.x, worldPos.y);
+        }
+
+        function pickBox(worldPos) {
+            for (let i = boxes.length - 1; i >= 0; i--) {
+                if (boxes[i].containsPoint(worldPos)) return boxes[i];
+            }
+            return null;
+        }
+
+        function setGrab(box, worldPos, pointerId = null, viaTouch = false) {
+            inputState.grabbedBox = box;
+            inputState.pointerId = pointerId;
+            inputState.grabbedViaTouch = viaTouch;
+            inputState.grabOffset = box.position.sub(worldPos);
+            inputState.target = clampPosition(box, worldPos.add(inputState.grabOffset));
+            box.velocity = new Vec2(0, 0);
+            box.angularVelocity = 0;
+            if (viaTouch && typeof canvas.setPointerCapture === 'function') {
+                canvas.setPointerCapture(pointerId);
+            }
+        }
+
+        function clearGrab(pointerId = null) {
+            if (!inputState.grabbedBox) return;
+            if (inputState.grabbedViaTouch) {
+                if (pointerId !== inputState.pointerId) return;
+                if (typeof canvas.hasPointerCapture === 'function' && canvas.hasPointerCapture(inputState.pointerId)) {
+                    canvas.releasePointerCapture(inputState.pointerId);
+                }
+            }
+            inputState.grabbedBox.velocity = new Vec2(0, 0);
+            inputState.grabbedBox.angularVelocity = 0;
+            inputState.grabbedBox = null;
+            inputState.pointerId = null;
+            inputState.target = null;
+            inputState.grabbedViaTouch = false;
+            inputState.hoveredBox = null;
+            inputState.grabOffset = null;
+        }
+
+        function updateTargetPosition(worldPos) {
+            if (!inputState.grabbedBox) return;
+            const offset = inputState.grabOffset || new Vec2(0, 0);
+            const desiredCenter = worldPos.add(offset);
+            inputState.target = clampPosition(inputState.grabbedBox, desiredCenter);
+        }
+
+        function getMouseWorld() {
+            const mouseWorld = ez.getMousePosWorld();
+            return new Vec2(mouseWorld.x, mouseWorld.y);
+        }
+
+        ez.onMouseMove(() => {
+            const worldPos = getMouseWorld();
+            inputState.hoveredBox = pickBox(worldPos);
+            if (inputState.grabbedBox && !inputState.grabbedViaTouch) {
+                updateTargetPosition(worldPos);
+            }
+        });
+
+        ez.onMouseDown(() => {
+            if (!ez.mouseDown.left) return;
+            const worldPos = getMouseWorld();
+            const hit = pickBox(worldPos);
+            if (hit) {
+                setGrab(hit, worldPos, null, false);
+            }
+        });
+
+        ez.onMouseUp(() => {
+            if (inputState.grabbedBox && !inputState.grabbedViaTouch) {
+                clearGrab();
+            }
+        });
+
+        ez.onMouseLeave(() => {
+            if (!inputState.grabbedViaTouch) {
+                clearGrab();
+            }
+            inputState.hoveredBox = null;
+        });
+
+        canvas.addEventListener('wheel', (event) => {
+            const worldPos = worldPosFromEvent(event);
+            const hovered = pickBox(worldPos);
+            if (hovered) {
+                inputState.hoveredBox = hovered;
+            }
+            const targetBox = inputState.grabbedBox || hovered;
+            if (!targetBox) return;
+            const direction = event.deltaY > 0 ? -1 : 1;
+            targetBox.angularVelocity += direction * 0.8;
+            event.preventDefault();
+        }, { passive: false });
+
+        canvas.addEventListener('pointerdown', (event) => {
+            if (event.pointerType === 'mouse') return;
+            const worldPos = worldPosFromEvent(event);
+            const hit = pickBox(worldPos);
+            if (hit) {
+                inputState.hoveredBox = hit;
+                setGrab(hit, worldPos, event.pointerId, true);
+                event.preventDefault();
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('pointermove', (event) => {
+            if (event.pointerType === 'mouse') return;
+            if (inputState.grabbedViaTouch && inputState.pointerId === event.pointerId) {
+                const worldPos = worldPosFromEvent(event);
+                inputState.hoveredBox = pickBox(worldPos);
+                updateTargetPosition(worldPos);
+                event.preventDefault();
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('pointerup', (event) => {
+            if (event.pointerType === 'mouse') return;
+            clearGrab(event.pointerId);
+        });
+
+        canvas.addEventListener('pointercancel', (event) => {
+            if (event.pointerType === 'mouse') return;
+            clearGrab(event.pointerId);
+        });
+
+        function applyDamping(box, dt) {
+            const linearAtten = Math.exp(-LINEAR_DAMPING * dt);
+            const angularAtten = Math.exp(-ANGULAR_DAMPING * dt);
+            box.velocity = box.velocity.scale(linearAtten);
+            box.angularVelocity *= angularAtten;
+        }
+
+        function enforceBounds(box) {
+            const clamped = clampPosition(box, box.position);
+            if (clamped.x !== box.position.x || clamped.y !== box.position.y) {
+                box.position = clamped;
+                box.velocity = new Vec2(0, 0);
+            }
+        }
+
+        function drawBoxOutline(box) {
+            const verts = box.shapes[0].vertices.map(v => box.localToWorld(v));
+            ez.ctx.save();
+            ez.ctx.strokeStyle = outlineColor;
+            ez.ctx.lineWidth = 2;
+            ez.ctx.lineJoin = 'round';
+            for (let i = 0; i < verts.length; i++) {
+                const v1 = verts[i];
+                const v2 = verts[(i + 1) % verts.length];
+                ez.line(vec2(v1.x, v1.y), vec2(v2.x, v2.y)).stroke();
+            }
+            ez.ctx.restore();
+        }
+
+        const highlightColors = {
+            reference: 'rgba(120, 244, 174, 0.5)',
+            incident: 'rgba(255, 105, 105, 0.5)',
+        };
+
+        function drawEdgeHighlight(edge, color) {
+            if (!edge) return;
+            ez.ctx.save();
+            ez.ctx.strokeStyle = color;
+            ez.ctx.lineCap = 'round';
+            ez.ctx.lineWidth = 12;
+            ez.line(vec2(edge[0].x, edge[0].y), vec2(edge[1].x, edge[1].y)).stroke();
+            ez.ctx.restore();
+        }
+
+        function drawContactPoint(point, color) {
+            ez.ctx.save();
+            ez.ctx.fillStyle = color;
+            ez.ctx.strokeStyle = outlineColor;
+            ez.circle(vec2(point.x, point.y), 0.09).fill();
+            ez.circle(vec2(point.x, point.y), 0.09).stroke();
+            ez.ctx.restore();
+        }
+
+        function computeSATDebugData() {
+            const shapeA = boxA.shapes[0];
+            const shapeB = boxB.shapes[0];
+            const sat = CollisionHelper.polyToPolySAT(boxA, shapeA, boxB, shapeB);
+            if (!sat || !sat.normal || !(sat.penetration > 0)) {
+                return null;
+            }
+
+            const referenceObj = sat.referenceIsA ? boxA : boxB;
+            const incidentObj = sat.referenceIsA ? boxB : boxA;
+            const referenceShape = sat.referenceIsA ? shapeA : shapeB;
+            const incidentShape = sat.referenceIsA ? shapeB : shapeA;
+
+            const refVerts = referenceShape.vertices.map(v => referenceObj.localToWorld(v));
+            const incVerts = incidentShape.vertices.map(v => incidentObj.localToWorld(v));
+            const refNormals = ConvexPolygonShape.getNormals(refVerts);
+            const incNormals = ConvexPolygonShape.getNormals(incVerts);
+
+            const refIndex = sat.referenceEdgeIndex;
+            const referenceEdge = [
+                refVerts[refIndex],
+                refVerts[(refIndex + 1) % refVerts.length],
+            ];
+
+            // Choose incident edge – the edge whose normal is most opposite the reference normal.
+            const referenceNormal = refNormals[refIndex];
+            let lowestDot = Infinity;
+            let incidentIndex = 0;
+            for (let i = 0; i < incNormals.length; i++) {
+                const dot = referenceNormal.dot(incNormals[i]);
+                if (dot < lowestDot) {
+                    lowestDot = dot;
+                    incidentIndex = i;
+                }
+            }
+            const incidentEdge = [
+                incVerts[(incidentIndex + 1) % incVerts.length],
+                incVerts[incidentIndex],
+            ];
+
+            const clipResult = CollisionHelper.clipPolyToPoly(referenceObj, referenceShape, incidentObj, incidentShape, sat);
+            const contactPoints = (clipResult && clipResult.points) ? clipResult.points : [];
+
+            return { referenceEdge, incidentEdge, contactPoints };
+        }
+
+        function drawLegend() {
+            const paddingLeft = 28;
+            const paddingBottom = 28;
+            const circleRadiusWorld = 0.12;
+
+            // Compute circle radius in pixels to derive a safe vertical spacing
+            const rPx = Math.abs(
+                ez.worldToScreen(new vec3(0, circleRadiusWorld, 0)).y -
+                ez.worldToScreen(new vec3(0, 0, 0)).y
+            );
+            const lineHeightPx = Math.max(22, 2 * rPx + 8);
+
+            const startScreen = vec2(paddingLeft, canvas.height - paddingBottom);
+            const screenToWorld = (sx, sy) => {
+                const world = ez.screenToWorld(vec2(sx, sy));
+                return new Vec2(world.x, world.y);
+            };
+
+            const referenceWorldPos = screenToWorld(startScreen.x, startScreen.y);
+            const incidentWorldPos = screenToWorld(startScreen.x, startScreen.y - lineHeightPx);
+
+            drawLegendEntry(referenceWorldPos, highlightColors.reference, 'Reference Edge');
+            drawLegendEntry(incidentWorldPos, highlightColors.incident, 'Incident Edge');
+        }
+
+        function drawLegendEntry(worldPos, color, label) {
+            ez.ctx.save();
+            ez.ctx.fillStyle = color;
+            ez.circle(vec2(worldPos.x, worldPos.y), 0.12).fill();
+
+            // Place text using pixel offsets from the circle's screen position for stable spacing
+            const centerScreen = ez.worldToScreen(new vec3(worldPos.x, worldPos.y, 0));
+            const rPx = Math.abs(
+                ez.worldToScreen(new vec3(worldPos.x, worldPos.y + 0.12, 0)).y - centerScreen.y
+            );
+            const textX = centerScreen.x + rPx + 8;
+            const textY = centerScreen.y + 5;
+
+            ez.ctx.fillStyle = outlineColor;
+            ez.ctx.font = '16px "Source Sans Pro", sans-serif';
+            ez.ctx.fillText(label, textX, textY);
+            ez.ctx.restore();
+        }
+
+
+        function update(dt) {
+            updateViewBounds();
+
+            if (inputState.grabbedBox && inputState.target) {
+                const box = inputState.grabbedBox;
+                const diff = inputState.target.sub(box.position);
+                const desiredVel = diff.scale(FOLLOW_RATE);
+                const speed = desiredVel.length();
+                if (speed > MAX_FOLLOW_SPEED) {
+                    const scale = MAX_FOLLOW_SPEED / speed;
+                    box.velocity = desiredVel.scale(scale);
+                } else {
+                    box.velocity = desiredVel;
+                }
+                if (diff.length() < 0.01) {
+                    box.velocity = new Vec2(0, 0);
+                }
+            }
+
+            world.step(dt);
+
+            for (const box of boxes) {
+                applyDamping(box, dt);
+                enforceBounds(box);
+            }
+
+            ez.clear('#f8f8f8');
+
+            ez.ctx.save();
+            ez.ctx.strokeStyle = '#d0d0d0';
+            ez.ctx.lineWidth = 1;
+            ez.grid(1, 50).stroke();
+            ez.ctx.restore();
+
+            PhysRenderer.render(world);
+
+            drawBoxOutline(boxA);
+            drawBoxOutline(boxB);
+
+            const satDebug = computeSATDebugData();
+            if (satDebug) {
+                drawEdgeHighlight(satDebug.referenceEdge, highlightColors.reference);
+                drawEdgeHighlight(satDebug.incidentEdge, highlightColors.incident);
+                for (const point of satDebug.contactPoints) {
+                    drawContactPoint(point, '#FF6B6B88');
+                }
+            }
+
+            drawLegend();
+        }
+
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>

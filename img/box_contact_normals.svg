@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simple illustration of three contact scenarios between two boxes -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 4 750 520" width="750" height="520" style="background-color: white;">
+  <defs>
+    <style>
+      .box{fill:#C4D7E0;stroke:#2F3437;stroke-width:1}
+      .dot{fill:#FF6B6B88;stroke:#2F3437;stroke-width:1}
+      .arrow{stroke:#2F3437;stroke-width:3;fill:none;marker-end:url(#arrow)}
+      .ntext{font-family:'Source Sans Pro', sans-serif;font-size:18px;fill:#2F3437;font-weight:600}
+      .shadow{filter:url(#drop-shadow)}
+    </style>
+    <filter id="drop-shadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="5" dy="5" stdDeviation="5" flood-color="rgba(0,0,0,0.2)"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2F3437"/>
+    </marker>
+  </defs>
+
+  <!-- Grid lines -->
+  <defs>
+    <pattern id="grid" width="75" height="75" patternUnits="userSpaceOnUse">
+      <path d="M 75 0 L 0 0 0 75" fill="none" stroke="#bbbbbb" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#grid)" />
+
+  <!-- Draw all shadows first (bottom layer) -->
+  <g transform="translate(65,25)">
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="0" y="90" width="120" height="120"/>
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(315,25)">
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="0" y="90" width="120" height="120"/>
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(565,25)">
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="0" y="90" width="120" height="120"/>
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+
+  <!-- Draw all fills (middle layer) -->
+  <g transform="translate(65,25)">
+    <rect fill="#FFB3BAEE" stroke="none" x="0" y="90" width="120" height="120"/>
+    <rect fill="#BAFFC9EE" stroke="none" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(315,25)">
+    <rect fill="#FFB3BAEE" stroke="none" x="0" y="90" width="120" height="120"/>
+    <rect fill="#BAFFC9EE" stroke="none" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(565,25)">
+    <rect fill="#FFB3BAEE" stroke="none" x="0" y="90" width="120" height="120"/>
+    <rect fill="#BAFFC9EE" stroke="none" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+
+  <!-- Draw all outlines (top layer) -->
+  <g transform="translate(65,25)">
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="0" y="90" width="120" height="120"/>
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(315,25)">
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="0" y="90" width="120" height="120"/>
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+  <g transform="translate(565,25)">
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="0" y="90" width="120" height="120"/>
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="20" y="15" width="120" height="120" transform="rotate(10 80 75)"/>
+  </g>
+
+  <!-- Draw contact points and arrows (topmost layer) -->
+  <!-- Left: two contact points, normal roughly downward -->
+  <g transform="translate(65,25)">
+    <circle class="dot" cx="11" cy="122.82" r="7"/>
+    <circle class="dot" cx="120" cy="142.6" r="7"/>
+    <path class="arrow" d="M 69.5 133 L 59.1 178"/>
+    <text class="ntext" x="54" y="195">n</text>
+  </g>
+
+  <!-- Middle: edge-edge contact, normal pointing up -->
+  <g transform="translate(315,25)">
+    <circle class="dot" cx="11" cy="122.82" r="7"/>
+    <circle class="dot" cx="120" cy="90.0" r="7"/>
+    <path class="arrow" d="M 65.5 90 L 65.5 45"/>
+    <text class="ntext" x="61" y="35">n</text>
+  </g>
+
+  <!-- Right: single contact point, normal pointing opposite direction -->
+  <g transform="translate(565,25)">
+    <circle class="dot" cx="71" cy="111.82" r="7"/>
+    <path class="arrow" d="M 71 111.82 L 81.4 65.62"/>
+    <text class="ntext" x="85" y="55">n</text>
+  </g>
+
+  <!-- Second set of diagrams (from box_contact_normals_2.svg) -->
+  <!-- Draw all shadows first (bottom layer) -->
+  <g transform="translate(190,290)">
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="0" y="80" width="120" height="120"/>
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="80" y="10" width="120" height="120"/>
+  </g>
+  <g transform="translate(440,290)">
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="0" y="80" width="120" height="120"/>
+    <rect fill="rgba(0,0,0,0.2)" stroke="none" class="shadow" x="80" y="10" width="120" height="120"/>
+  </g>
+
+  <!-- Draw all fills (middle layer) -->
+  <g transform="translate(190,290)">
+    <rect fill="#FFB3BAEE" stroke="none" x="0" y="80" width="120" height="120"/>
+    <rect fill="#BAFFC9EE" stroke="none" x="80" y="10" width="120" height="120"/>
+  </g>
+  <g transform="translate(440,290)">
+    <rect fill="#FFB3BAEE" stroke="none" x="0" y="80" width="120" height="120"/>
+    <rect fill="#BAFFC9EE" stroke="none" x="80" y="10" width="120" height="120"/>
+  </g>
+
+  <!-- Draw all outlines (top layer) -->
+  <g transform="translate(190,290)">
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="0" y="80" width="120" height="120"/>
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="80" y="10" width="120" height="120"/>
+  </g>
+  <g transform="translate(440,290)">
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="0" y="80" width="120" height="120"/>
+    <rect fill="none" stroke="#2F3437" stroke-width="1" x="80" y="10" width="120" height="120"/>
+  </g>
+
+  <!-- Draw contact points and arrows (topmost layer) -->
+  <g transform="translate(190,290)">
+    <circle class="dot" cx="120" cy="130" r="7"/>
+    <circle class="dot" cx="80" cy="130" r="7"/>
+    <path class="arrow" d="M 100 130 L 100 175"/>
+    <text class="ntext" x="95" y="195">n</text>
+  </g>
+
+  <g transform="translate(440,290)">
+    <circle class="dot" cx="80" cy="80" r="7"/>
+    <circle class="dot" cx="80" cy="130" r="7"/>
+    <path class="arrow" d="M 80 105 L 35 105"/>
+    <text class="ntext" x="17" y="110">n</text>
+  </g>
+</svg>
+
+

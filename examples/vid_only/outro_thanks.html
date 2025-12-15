@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Outro - Thanks</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600&display=swap">
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_mixed_verlet.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../slime-renderer-mixed.js"></script>
+    <script src="../mixed_slime.js"></script>
+    <script>
+        const canvas = ez.createCanvasAndAddToPage();
+        document.body.style.background = '#ffffff';
+        ez.centerOrigin = true;
+
+        const worldHeight = 16;
+        const cameraCenterY = -0.8;
+        let worldWidth;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, cameraCenterY), vec2(worldWidth, worldHeight), true);
+        }
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+        let signDims = null; // cache size to avoid flicker
+
+        const world = new PhysWorldMixed();
+        world.gravity = new Vec2(0, -9.81);
+
+        const groundY = cameraCenterY - worldHeight / 2 + 0.5;
+        const floor = world.addBox(0, groundY, worldWidth * 2, 1, 1, true);
+        floor.friction = 1.0;
+        floor.restitution = 0.0;
+
+        let slime = null;
+        let slimeRenderer = null;
+        let signImage = null;
+
+        // Spawn slime immediately, just inside the left edge at ground height
+        (function spawnSlime() {
+            slimeRenderer = new MixedSlimeRenderer(ez);
+            document.body.appendChild(slimeRenderer.mainSVG);
+            const leftEdgeX = -worldWidth * 0.5; // baseBottomLeft.x equivalent without zoom animation
+            const spawnX = leftEdgeX - 3.0;
+            slime = new MixedSlime(world, slimeRenderer, spawnX, groundY + 2, { radius: 2, groundAccel: 0.01, airAccel: 0.002, maxHorizSpeed: 1.6 });
+
+            // Create a sign image that will track the slime
+            signImage = document.createElementNS('http://www.w3.org/2000/svg', 'image');
+            // Use xlink namespace for broad compatibility
+            signImage.setAttributeNS('http://www.w3.org/1999/xlink', 'href', 'sign.svg');
+            signImage.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+            signImage.style.pointerEvents = 'none';
+            // Ensure it's on top of the slime body
+            slimeRenderer.mainSVG.appendChild(signImage);
+        })();
+
+        function update(dt) {
+            ez.clear();
+            // Jitter-free SVG grid
+            ez.gridSvg(1, Infinity, { strokeWidth: 1 });
+            PhysRenderer.render(world);
+            if (slime) slime.render();
+            if (slime) slime.preStep(dt);
+            world.step(dt, 1 / 544, 40);
+
+            // Update sign position to follow the slime
+            if (signImage && slime && slime.instance && slime.instance.verts && slime.instance.verts.length) {
+                // Compute screen-space bounding box from slime verts (already screen coords)
+                const xs = slime.instance.verts.map(v => v.x);
+                const ys = slime.instance.verts.map(v => v.y);
+                const minX = Math.min(...xs);
+                const maxX = Math.max(...xs);
+                const minY = Math.min(...ys);
+                const maxY = Math.max(...ys);
+                const width = maxX - minX;
+                const height = maxY - minY;
+
+                // Size the sign relative to slime width (3x bigger), cache to avoid popping
+                if (!signDims) {
+                    const w = Math.max(120, width * 0.9 * 3);
+                    const h = w * 0.4; // assume aspect ratio ~ 2.5:1
+                    signDims = { w, h };
+                }
+                const signW = signDims.w;
+                const signH = signDims.h;
+
+                // Position slightly above slime center, a bit to the right
+                const x = minX + width * 0.55 - signW * 0.5;
+                // Lower the sign by ~1 world unit from the slime top to avoid floating
+                const ppu = slime.instance.pixelsPerUnit || 120;
+                const y = minY - signH + (0.9 * ppu);
+
+                signImage.setAttribute('x', String(x));
+                signImage.setAttribute('y', String(y));
+                signImage.setAttribute('width', String(signW));
+                signImage.setAttribute('height', String(signH));
+                // Add a subtle rotation to look handheld
+                const cx = x + signW / 2;
+                const cy = y + signH / 2;
+                signImage.setAttribute('transform', `rotate(-8 ${cx} ${cy})`);
+            }
+        }
+
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>
+
+

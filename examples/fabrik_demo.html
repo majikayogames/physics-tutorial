@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FABRIK IK Demo</title>
+    <style>
+        /* Add some basic styling if needed */
+        body { margin: 0; overflow: hidden; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // --- Setup ---
+        let canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 1), vec2(6.5, 7.77), true);
+
+        // --- Physics World ---
+        let world = new PhysWorld();
+        world.gravity = new Vec2(0, 0); // Start with zero gravity for pure IK
+        const dt = 1 / 60; // Fixed timestep
+
+        // --- Ragdoll Structure ---
+        let torso, upperArm, foreArm, hand;
+        let shoulderJoint, elbowJoint, wristJoint;
+        const upperArmLength = 1.5;
+        const foreArmLength = 1.2;
+        const handRadius = 0.28;
+
+        function setupScene() {
+            // --- Torso --- (Static, Vertical Capsule)
+            const torsoRadius = 0.4;
+            const torsoSegmentLength = 1.6;
+            torso = world.addCapsule(0, 1, torsoSegmentLength, torsoRadius, torsoRadius, 1, true);
+            torso.rotation = Math.PI / 2; // Rotate to be vertical
+            torso.isStatic = true;
+            torso.mass = Infinity;
+            torso.momentOfInertia = Infinity;
+
+            // Shoulder Anchor: Use torso's positive local X end cap (shapes[2]) which becomes positive world Y after rotation.
+            const shoulderAnchorLocalA = torso.shapes[2].offset; // Local offset on torso
+            const shoulderAnchorWorld = torso.localToWorld(shoulderAnchorLocalA);
+
+            // --- Upper Arm --- (Dynamic Capsule)
+            const upperArmRadius = 0.25;
+            upperArm = world.addCapsule(0, 0, upperArmLength, upperArmRadius, upperArmRadius); // Create at origin first
+            const upperArmShoulderLocalB = upperArm.shapes[2].offset; // Connect using positive local X end cap (shapes[2])
+            const upperArmElbowLocalA = upperArm.shapes[1].offset;   // Elbow connection is at negative local X end cap (shapes[1])
+
+            // Set initial rotation (e.g., pointing slightly down)
+            upperArm.rotation = -Math.PI / 3; // Adjust initial angle as needed
+
+            // Calculate the world offset of the shoulder anchor relative to the upper arm's center *after rotation*
+            const upperArmShoulderWorldOffset = upperArmShoulderLocalB.rotate(upperArm.rotation);
+
+            // Position the upper arm so its shoulder anchor (upperArmShoulderLocalB) matches the torso's anchor (shoulderAnchorWorld)
+            upperArm.position = shoulderAnchorWorld.sub(upperArmShoulderWorldOffset);
+            upperArm.collisionMask = 0; // Disable collision for IK chain
+
+            // Calculate the world position of the elbow anchor based on the upper arm's final position and rotation
+            const elbowAnchorWorld = upperArm.localToWorld(upperArmElbowLocalA);
+
+            // --- Forearm --- (Dynamic Capsule)
+            const foreArmRadius = 0.25;
+            foreArm = world.addCapsule(0, 0, foreArmLength, foreArmRadius, foreArmRadius); // Create at origin
+            const foreArmElbowLocalB = foreArm.shapes[2].offset; // Connect to elbow using positive local X end cap (shapes[2])
+            const foreArmWristLocalA = foreArm.shapes[1].offset;  // Wrist connection is at negative local X end cap (shapes[1])
+
+            // Set initial rotation (e.g., aligned with upper arm or slightly bent)
+            foreArm.rotation = upperArm.rotation - Math.PI / 4; // Adjust initial angle
+
+            // Calculate the world offset of the elbow anchor relative to the forearm's center *after rotation*
+            const foreArmElbowWorldOffset = foreArmElbowLocalB.rotate(foreArm.rotation);
+
+            // Position the forearm so its elbow anchor (foreArmElbowLocalB) matches the upper arm's anchor (elbowAnchorWorld)
+            foreArm.position = elbowAnchorWorld.sub(foreArmElbowWorldOffset);
+            foreArm.collisionMask = 0; // Disable collision
+
+            // Calculate the world position of the wrist anchor based on the forearm's final position and rotation
+            const wristAnchorWorld = foreArm.localToWorld(foreArmWristLocalA);
+
+            // --- Hand --- (Circle)
+            hand = world.addCircle(0, 0, handRadius); // Create at origin
+            const handWristLocalB = new Vec2(0, 0); // Hand connects at its center
+
+            // Set initial rotation (e.g., aligned with forearm)
+            hand.rotation = foreArm.rotation;
+
+            // Position the hand so its center (handWristLocalB) matches the forearm's anchor (wristAnchorWorld)
+            // Since handWristLocalB is (0,0), the world offset is also (0,0), so hand position = wristAnchorWorld
+            hand.position = new Vec2(wristAnchorWorld.x, wristAnchorWorld.y); // Use slice to copy
+            hand.collisionMask = 0; // Disable collision
+
+            // --- Constraints (Joints) ---
+            // Use the precisely calculated world anchor positions.
+            // The local anchors used here MUST match the local points used to calculate the world positions above.
+            // Shoulder limits: Relative to vertical torso. Allow ~ -45 deg to +180 deg.
+            const shoulderLowerLimit = -Math.PI / 4;
+            const shoulderUpperLimit = Math.PI;
+            shoulderJoint = world.addRevoluteConstraint(torso, upperArm, shoulderAnchorWorld, shoulderLowerLimit, shoulderUpperLimit);
+            shoulderJoint._limitsRotationRendererHint = 0
+
+            // Elbow limits: Relative to upper arm. Allow ~ -18 deg (almost straight) to +180 deg (fully bent).
+            const elbowLowerLimit = 0 + Math.PI*0.1;
+            const elbowUpperLimit = Math.PI - Math.PI*0.1 + Math.PI*0.1;
+            elbowJoint = world.addRevoluteConstraint(upperArm, foreArm, elbowAnchorWorld, elbowLowerLimit, elbowUpperLimit);
+            elbowJoint._limitsRotationRendererHint = elbowLowerLimit*1.23
+            
+            wristJoint = world.addRevoluteConstraint(foreArm, hand, wristAnchorWorld, Math.PI, Math.PI);
+
+            // Motors will drive these based on IK
+        }
+
+        // --- FABRIK IK Implementation ---
+        function runFabrik(chain, targetPos, lengths, tolerance = 0.01, maxIterations = 15) {
+            const numJoints = chain.length;
+            const totalLength = lengths.reduce((sum, len) => sum + len, 0);
+            const basePos = chain[0].clone(); // Keep the base fixed, use clone
+
+            let dist = targetPos.sub(basePos).length();
+
+            // Create a working copy of the chain to modify
+            let currentChain = chain.map(p => p.clone());
+
+            // Check if target is out of reach
+            if (dist > totalLength) {
+                // Stretch towards the target
+                const direction = targetPos.sub(basePos).normalize();
+                currentChain[0] = basePos; // Keep base fixed
+                for (let i = 1; i < numJoints; i++) {
+                    currentChain[i] = currentChain[i-1].add(direction.scale(lengths[i-1])); // Use scale
+                }
+            } else {
+                // Target is reachable, perform FABRIK iterations
+                let currentTargetPos = targetPos.clone(); // Use clone
+                let iter = 0;
+                let diff = currentChain[numJoints - 1].sub(currentTargetPos).length();
+
+                while (diff > tolerance && iter < maxIterations) {
+                    // Backward pass: End effector to base
+                    currentChain[numJoints - 1] = currentTargetPos;
+                    for (let i = numJoints - 2; i >= 0; i--) {
+                        let segmentDir = currentChain[i].sub(currentChain[i+1]).normalize();
+                        currentChain[i] = currentChain[i+1].add(segmentDir.scale(lengths[i])); // Use scale
+                    }
+
+                    // Forward pass: Base to end effector
+                    currentChain[0] = basePos; // Re-anchor the base
+                    for (let i = 0; i < numJoints - 1; i++) {
+                         let segmentDir = currentChain[i+1].sub(currentChain[i]).normalize();
+                         currentChain[i+1] = currentChain[i].add(segmentDir.scale(lengths[i])); // Use scale
+                    }
+
+                    diff = currentChain[numJoints - 1].sub(currentTargetPos).length();
+                    iter++;
+                }
+            }
+            // Return the modified chain
+            return currentChain;
+        }
+
+
+        // --- Main Loop ---
+        function update() {
+            ez.clear();
+
+            // Draw grid & axes
+            ez.ctx.lineWidth = 1;
+            ez.grid(1, 50).stroke(0xbbbbbb);
+            ez.ctx.lineWidth = 1.5;
+            ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey");
+            ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey");
+
+            // --- IK Calculation ---
+            // Get mouse position in world coordinates (already a vec2 from ezdraw)
+            // Revert the negation: use raw mouse pos for FABRIK
+            // const targetPosRaw = ez.getMousePosWorld();
+            // Hypothesis: ez.getMousePosWorld() returns Y-mirrored coords relative to physics Y-up.
+            // Correct it before passing to FABRIK.
+            // const targetPos = vec2(targetPosRaw.x, -targetPosRaw.y);
+            const targetPos = ez.getMousePosWorld(); // Use raw position
+
+            // Define current chain state for FABRIK using vec2
+            // Convert physics engine Vec2 objects to ezdraw vec2 objects
+            const shoulderPhysPos = torso.localToWorld(shoulderJoint.localA);
+            const elbowPhysPos = upperArm.localToWorld(elbowJoint.localA);
+            const wristPhysPos = foreArm.localToWorld(wristJoint.localA);
+
+            const shoulderPos = vec2(shoulderPhysPos.x, shoulderPhysPos.y);
+            const elbowPos = vec2(elbowPhysPos.x, elbowPhysPos.y);
+            const wristPos = vec2(wristPhysPos.x, wristPhysPos.y);
+
+            let currentJointPositions = [shoulderPos, elbowPos, wristPos];
+            const segmentLengths = [upperArmLength, foreArmLength]; // Lengths between joints
+
+            // Run FABRIK
+            let targetJointPositions = runFabrik(
+                [...currentJointPositions], // Pass a copy
+                targetPos,
+                segmentLengths
+            );
+
+            // --- Apply IK results via Motors ---
+            const newShoulderPos = targetJointPositions[0]; // Should remain fixed
+            const newElbowPos = targetJointPositions[1];
+            const newWristPos = targetJointPositions[2];
+
+            // Calculate target angles (world angles) in Y-down space (from FABRIK output)
+            const targetShoulderAngle = newElbowPos.sub(newShoulderPos).angle();
+            const targetElbowAngle = newWristPos.sub(newElbowPos).angle();
+
+            // Convert target world angles to physics Y-up space by negating them
+            const physicsTargetUpperArmAngle = -targetShoulderAngle;
+            const physicsTargetForeArmAngle = -targetElbowAngle;
+
+            // Calculate target *relative* angles for motors
+            // Motor angle = angle(bodyB) - angle(bodyA)
+            // Shoulder: Target = targetAngle(upperArm) - angle(torso)
+            const targetShoulderRelativeAngle = shortestAngleDifference(physicsTargetUpperArmAngle, torso.rotation);
+            // Elbow: Target = targetAngle(foreArm) - targetAngle(upperArm)
+            const targetElbowRelativeAngle = shortestAngleDifference(physicsTargetForeArmAngle, physicsTargetUpperArmAngle);
+
+            // Shoulder Motor
+            // Use the relative angle calculated in physics space
+            shoulderJoint.setMotorTargetAngle(-targetShoulderRelativeAngle, 25, 22, 2);
+
+            // Elbow Motor
+            // Use the relative angle calculated in physics space
+            elbowJoint.setMotorTargetAngle(-targetElbowRelativeAngle, 25, 22, 2);
+
+            // Wrist Motor (Align hand with forearm) - REMOVED
+            // wristJoint.setMotorTargetAngle(targetHandAngle, maxMotorForce / 2);
+
+            // --- Render and Step ---
+            PhysRenderer.render(world);
+            world.step(dt);
+
+            // Draw target position (use the raw mouse pos)
+            ez.circle(targetPos, 0.1).fill("red");
+            // Draw IK calculated positions (for debugging)
+             ez.circle(newShoulderPos, 0.05).fill("blue");
+             ez.circle(newElbowPos, 0.05).fill("blue");
+             ez.circle(newWristPos, 0.05).fill("blue");
+             ez.line(newShoulderPos, newElbowPos).stroke("rgba(0,0,255,0.5)");
+             ez.line(newElbowPos, newWristPos).stroke("rgba(0,0,255,0.5)");
+        }
+
+        // Helper function for calculating shortest angle difference
+        function shortestAngleDifference(target, current) {
+            let diff = target - current;
+            while (diff <= -Math.PI) diff += 2 * Math.PI;
+            while (diff > Math.PI) diff -= 2 * Math.PI;
+            return diff;
+        }
+
+        // --- Initialization ---
+        setupScene();
+        ez.callAnimate(update, true); // Start animation loop
+
+        // We don't need the default mouse controls for dragging,
+        // as the mouse is used as the IK target.
+        // PhysRenderer.initMouseControls(world);
+
+    </script>
+</body>
+</html> 

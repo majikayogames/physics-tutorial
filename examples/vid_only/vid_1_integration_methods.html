@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Verlet and Euler Integration Explained</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_mixed_verlet.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../curtain_intro.js"></script>
+    <script src="../self_balancing_ragdoll_sluggish.js"></script>
+    <script src="../slime-renderer-mixed.js"></script>
+    <script src="../mixed_slime.js"></script>
+    <script>
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+
+        const worldHeight = 16;
+        const cameraCenterY = -0.8;
+        let worldWidth;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, cameraCenterY), vec2(worldWidth, worldHeight), true);
+        }
+
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+
+        // Position the ground so a full unit of its height remains visible at the
+        // bottom of the screen. The camera's bottom edge is at
+        // `cameraCenterY - worldHeight / 2`, and the ground is 1 unit tall, so
+        // we offset its center by +0.5 to keep it fully in view.
+        const groundY = cameraCenterY - worldHeight / 2 + 0.5;
+        const world = new PhysWorldMixed();
+        world.gravity = new Vec2(0, -9.81);
+
+        // Ground
+        world.addBox(0, groundY, worldWidth + 2, 1, 1, true);
+
+        // Create decorative chains on left and right
+        function createDiamondChain(startX, startY, length, size = 0.8, angleFromUpDeg = 15) {
+            const links = [];
+            const sqrt2 = Math.sqrt(2);
+            const diagonal = size * sqrt2;
+            const halfDiagonal = diagonal * 0.5;
+            
+            // Create visible static anchor box
+            const anchor = world.addBox(startX, startY, 2.25, 1.2, 1, true);
+            anchor.collisionMask = 0; // no collisions
+            //anchor._renderColorHint = "#8B4513"; // brown color for anchor
+            
+            const anchorBase = new Vec2(startX, startY - 0.6); // attach at bottom of anchor box (height/2 = 1.2/2 = 0.6)
+            const angleRad = angleFromUpDeg * Math.PI / 180;
+            // Direction angled from up
+            const phi = Math.PI / 2 + angleRad;
+            const dir = new Vec2(Math.cos(phi), Math.sin(phi));
+
+            for (let i = 0; i < length; i++) {
+                const center = anchorBase.add(dir.scale(halfDiagonal + i * diagonal));
+                const box = world.addBox(center.x, center.y, size, size);
+                box.rotation = Math.PI / 4 + angleRad;
+                box.collisionMask = 0; // no collisions
+                box.collisionMaskIgnore = 0xFFFFFF; // ignore all collisions
+                
+                // Add random upward force to each chain link
+                const randomUpwardForce = 3 + Math.random() * 5; // 3-8 upward force (softer)
+                const randomSideForce = (Math.random() - 0.5) * 3; // -1.5 to 1.5 sideways force (softer)
+                box.velocity = new Vec2(randomSideForce, randomUpwardForce);
+                
+                links.push(box);
+
+                if (i > 0) {
+                    const jointPos = anchorBase.add(dir.scale(i * diagonal));
+                    world.addRevoluteConstraint(links[i - 1], box, jointPos);
+                } else {
+                    const anchorPos = anchorBase;
+                    world.addRevoluteConstraint(anchor, box, anchorPos);
+                }
+            }
+            return { anchor, links };
+        }
+
+        // Add chains on left and right sides - longer and positioned lower and more centered
+        const chainY = cameraCenterY + worldHeight / 2 - 1.5; // raised position
+        const leftChainX = -worldWidth / 2 + 4; // closer to center
+        const rightChainX = worldWidth / 2 - 4; // closer to center
+        createDiamondChain(leftChainX, chainY, 8, 0.6, -160); // left chain angled left, longer
+        createDiamondChain(rightChainX, chainY, 8, 0.6, 161);  // right chain angled right, longer
+
+        const ragdoll = spawnSelfBalancingRagdoll(world, 0, groundY + 2);
+        PhysRenderer.initMouseControls(world);
+
+        let spawnTimer = 0;
+        let elapsed = 0;
+        const spawnDelay = 1.0; // start throwing sooner
+        const spawnInterval = 4;
+        let slime = null;
+        let slimeRenderer = null;
+
+        function spawnIncomingBox() {
+            const head = ragdoll.rig.limbs["head"].body.position;
+            const left = -worldWidth / 2;
+            const right = worldWidth / 2;
+            const bottom = cameraCenterY - worldHeight / 2;
+            const top = cameraCenterY + worldHeight / 2;
+            const fromLeft = Math.random() < 0.5;
+            const x = fromLeft
+                ? left - (1 + Math.random() * 2)
+                : right + (1 + Math.random() * 2);
+            const y = bottom + Math.random() * (top - bottom);
+
+            const box = world.addBox(x, y, 1.2, 1.2, 0.6);
+            const target = new Vec2(head.x, head.y);
+            const dir = target.sub(new Vec2(x, y)).normalized();
+            const speed = 24 + Math.random() * 8;
+            box.velocity = dir.scale(speed);
+            box.angularVelocity = (Math.random() - 0.5) * 20;
+        }
+
+        function update(dt) {
+            elapsed += dt;
+            if (!slime && elapsed >= 11) {
+                const top = cameraCenterY + worldHeight / 2;
+                slimeRenderer = new MixedSlimeRenderer(ez);
+                document.body.appendChild(slimeRenderer.mainSVG);
+                slime = new MixedSlime(world, slimeRenderer, 0, top + 2, { radius: 2, groundAccel: 0.1, airAccel: 0.02, maxHorizSpeed: 1.6 });
+            }
+
+            if (elapsed >= spawnDelay) {
+                spawnTimer += dt;
+                if (spawnTimer >= spawnInterval) {
+                    spawnIncomingBox();
+                    spawnTimer = 0;
+                }
+            }
+
+            ez.clear();
+            ez.ctx.lineWidth = 1;
+            ez.gridSvg(1, Infinity);
+            ez.ctx.lineWidth = 1.5;
+
+            // Title with a subtle drop shadow instead of an outline
+            ez.save();
+            ez.ctx.shadowColor = "rgba(0,0,0,0.25)";
+            ez.ctx.shadowBlur = 4;
+            ez.ctx.shadowOffsetX = 0;
+            ez.ctx.shadowOffsetY = 0;
+            ez.textWorldScaled("Verlet & Euler Integration\nExplained", vec2(0, cameraCenterY + 2.25), {
+                fontSize: 12.8,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontStyle: "bold",
+                textAlign: "center",
+                textBaseline: "middle"
+            }).fill("#000000");
+            ez.restore();
+
+            // Credit line directly beneath the title with a subtle drop shadow
+            ez.save();
+            ez.ctx.shadowColor = "rgba(0,0,0,0.2)";
+            ez.ctx.shadowBlur = 3;
+            ez.ctx.shadowOffsetX = 0;
+            ez.ctx.shadowOffsetY = 0;
+            ez.textWorldScaled("Part of the physics engine tutorial series created by Majikayo Games", vec2(0, cameraCenterY + 0.3), {
+                fontSize: 3.2,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                textAlign: "center",
+                textBaseline: "middle"
+            }).fill("#000000");
+            ez.restore();
+            PhysRenderer.render(world);
+            if (slime) slime.render();
+            if (slime) slime.preStep(dt);
+            ragdoll.update(dt);
+            world.step(dt, ragdoll.fixedDt, ragdoll.maxSubsteps);
+        }
+
+        playCurtainIntro(canvas);
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>

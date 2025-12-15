@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Collision Detection & Contact Generation Explained</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+    <!-- Audio elements for pop sounds -->
+    <audio id="popSound1" preload="auto">
+        <source src="pop sound 1.mp3" type="audio/mpeg">
+    </audio>
+    <audio id="popSound2" preload="auto">
+        <source src="pop sound 2.mp3" type="audio/mpeg">
+    </audio>
+    <audio id="popSound3" preload="auto">
+        <source src="pop sound 3.mp3" type="audio/mpeg">
+    </audio>
+</head>
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_mixed_verlet.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../curtain_intro.js"></script>
+    <script src="../slime-renderer-mixed.js"></script>
+    <script src="../mixed_slime.js"></script>
+    <script>
+        // Seeded random number generator for deterministic demos
+        let DEMO_SEED; // Decent stack
+        DEMO_SEED = 836432; // Decent stack
+        DEMO_SEED = 795417; // Decent stack, words not too obstructed
+        DEMO_SEED = 929962; // Decent scatter, words not too obstructed
+        DEMO_SEED = 692193; // Decent shape
+        DEMO_SEED = 425736; // Decent shape no slime control needed he just falls
+        //DEMO_SEED = undefined; // Comment this line to use the seed above
+        
+        let rngSeed = DEMO_SEED !== undefined ? DEMO_SEED : Math.floor(Math.random() * 1000000);
+        console.log(`Demo seed: ${rngSeed}`);
+        
+        // Simple seeded RNG using mulberry32
+        function seededRandom() {
+            let t = rngSeed += 0x6D2B79F5;
+            t = Math.imul(t ^ t >>> 15, t | 1);
+            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        }
+        
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+
+        const worldHeight = 16;
+        const cameraCenterY = -0.8;
+        let worldWidth;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, cameraCenterY), vec2(worldWidth, worldHeight), true);
+        }
+
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+
+        const world = new PhysWorldMixed();
+        world.gravity = new Vec2(0, -9.81);
+
+        const groundY = cameraCenterY - worldHeight / 2 + 0.5;
+        world.addBox(0, groundY, worldWidth + 2, 1, 1, true);
+
+        const permanentContacts = [];
+        let activeFallers = 0;
+
+        PhysRenderer._renderConstraints = false;
+
+        // Audio elements for pop sounds
+        const popSounds = [
+            document.getElementById('popSound1'),
+            document.getElementById('popSound2'),
+            document.getElementById('popSound3')
+        ];
+
+        function playRandomPopSound() {
+            const randomIndex = Math.floor(Math.random() * popSounds.length);
+            const audio = popSounds[randomIndex];
+            if (audio) {
+                audio.currentTime = 0; // Reset to beginning
+                audio.volume = 0.3; // Set volume to 30%
+                audio.play().catch(e => console.log('Audio play failed:', e));
+            }
+        }
+
+        function freezeOnContact() {
+            if (activeFallers === 0) return;
+            for (const c of world.constraints) {
+                if (!(c instanceof ContactConstraint)) continue;
+                const bodies = [c.bodyA, c.bodyB];
+                for (const body of bodies) {
+                    if (body._falling && !body._frozen) {
+                        // Only freeze when contacting a static (ground or already-frozen) body
+                        const other = body === c.bodyA ? c.bodyB : c.bodyA;
+                        if (!other.isStatic) continue;
+                        const local = body === c.bodyA ? c.localA : c.localB;
+                        const wp = body.localToWorld(local);
+                        permanentContacts.push({ x: wp.x, y: wp.y });
+                        const color = PhysRenderer._getObjectColor(body);
+                        body._renderColorHint = color;
+                        PhysRenderer._objectColors.set(body, color);
+                        body.isStatic = true;
+                        body.velocity = new Vec2(0, 0);
+                        body.angularVelocity = 0;
+                        body._frozen = true;
+                        body._falling = false;
+                        activeFallers--;
+                        
+                        // Play random pop sound when object sticks
+                        playRandomPopSound();
+                    }
+                }
+            }
+        }
+
+        world.onDetectCollisions = freezeOnContact;
+
+        function addStar(world, x, y, points, outerRadius, innerRadius, angleOffset = 0) {
+            const shapes = [];
+            const triangles = [];
+            const step = (Math.PI * 2) / points;
+
+            const outer = [];
+            const inner = [];
+
+            for (let k = 0; k < points; k++) {
+                const angleOuter = angleOffset + k * step;
+                const angleInner = angleOuter + step / 2;
+
+                outer.push(new Vec2(outerRadius * Math.cos(angleOuter), outerRadius * Math.sin(angleOuter)));
+                inner.push(new Vec2(innerRadius * Math.cos(angleInner), innerRadius * Math.sin(angleInner)));
+            }
+
+            for (let k = 0; k < points; k++) {
+                const O = outer[k];
+                const I = inner[k];
+                const Op = outer[(k + 1) % points];
+
+                shapes.push(new ConvexPolygonShape([new Vec2(0, 0), O, I]));
+                shapes.push(new ConvexPolygonShape([new Vec2(0, 0), I, Op]));
+
+                triangles.push({ v1: O, v2: I });
+                triangles.push({ v1: I, v2: Op });
+            }
+
+            let totalArea = 0;
+            for (const tri of triangles) {
+                const x1 = tri.v1.x, y1 = tri.v1.y;
+                const x2 = tri.v2.x, y2 = tri.v2.y;
+                totalArea += Math.abs(x1 * y2 - x2 * y1) * 0.5;
+            }
+            const density = 1 / totalArea;
+
+            let momentOfInertia = 0;
+            for (const tri of triangles) {
+                const x1 = tri.v1.x, y1 = tri.v1.y;
+                const x2 = tri.v2.x, y2 = tri.v2.y;
+                const areaTri = Math.abs(x1 * y2 - x2 * y1) * 0.5;
+                const mTri = density * areaTri;
+                const dot = x1 * x2 + y1 * y2;
+                const sum =
+                    (x1 * x1 + y1 * y1) +
+                    dot +
+                    (x2 * x2 + y2 * y2);
+                momentOfInertia += (mTri * sum) / 6;
+            }
+
+            const star = new PhysObject(x, y, shapes, false, 1, momentOfInertia);
+            world.objects.push(star);
+            return star;
+        }
+
+        function shuffle(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(seededRandom() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        const baseOrder = ["star", "capsule", "circle", "box"];
+        let shapeOrder = [];
+
+        function nextShapeType() {
+            if (shapeOrder.length === 0) {
+                shapeOrder = shuffle([...baseOrder]);
+            }
+            return shapeOrder.pop();
+        }
+
+        // Sample from a normal distribution using Box-Muller transform
+        function gaussianRandom(mean = 0, stdDev = 1) {
+            let u = 0, v = 0;
+            while (u === 0) u = seededRandom();
+            while (v === 0) v = seededRandom();
+            const mag = Math.sqrt(-2.0 * Math.log(u));
+            const z = mag * Math.cos(2.0 * Math.PI * v); // N(0,1)
+            return mean + z * stdDev;
+        }
+
+        function spawnShape() {
+            // New strategy: build a center mound by targeting near-center early,
+            // then gradually widening targets to form a stable slope
+            const left = -worldWidth / 2;
+            const right = worldWidth / 2;
+            const top = cameraCenterY + worldHeight / 2;
+            const margin = 0.6;
+
+            // Much wider spread for a platform-like base
+            const progress = Math.min(1, spawnCount / Math.max(1, maxSpawn - 1));
+            const baseSigma = worldWidth * 0.15;
+            const wideSigma = worldWidth * 0.25;
+            const sigma = baseSigma * (1 - progress) + wideSigma * progress;
+
+            // Target across a wide band, truncated to screen with margin
+            let xTarget = gaussianRandom(0, sigma);
+            xTarget = Math.max(left + margin, Math.min(right - margin, xTarget));
+
+            // Spawn from a wider area above with more horizontal spread, always off-screen
+            const x = xTarget + gaussianRandom(0, worldWidth * 0.08);
+            const y = top + 2.0 + seededRandom() * 1.0;
+            let obj;
+            const type = nextShapeType();
+            if (type === "box") {
+                const w = 1.2 + seededRandom() * 1.6;
+                const h = 1.2 + seededRandom() * 1.6;
+                obj = world.addBox(x, y, w, h, 1);
+            } else if (type === "circle") {
+                const r = 0.8 + seededRandom() * 1.2;
+                obj = world.addCircle(x, y, r, 1);
+            } else if (type === "capsule") {
+                const length = 2 + seededRandom() * 3;
+                const r1 = 0.4 + seededRandom() * 0.6;
+                const r2 = 0.4 + seededRandom() * 0.6;
+                obj = world.addCapsule(x, y, length, r1, r2, 1);
+            } else {
+                const points = 5 + Math.floor(seededRandom() * 3);
+                const outer = 1.0 + seededRandom() * 1.5;
+                const inner = outer * 0.5;
+                obj = addStar(world, x, y, points, outer, inner, seededRandom() * Math.PI * 2);
+            }
+            // Throw downwards toward the target with stronger speed and small randomness
+            const toTarget = new Vec2(xTarget - x, (groundY) - y);
+            const dist = Math.max(0.001, toTarget.length());
+            let dirVec = toTarget.scale(1 / dist);
+            dirVec = new Vec2(dirVec.x, dirVec.y - 0.12).normalized();
+            const baseSpeed = 10.5 + seededRandom() * 3.5;
+            let vx = dirVec.x * baseSpeed + gaussianRandom(0, 0.35);
+            let vy = dirVec.y * baseSpeed + gaussianRandom(0, 0.3);
+            // Ensure it's heading downward mostly
+            if (vy > -1.0) vy -= 1.2 + seededRandom() * 0.6;
+            obj.velocity = new Vec2(vx, vy);
+            obj.angularVelocity = (seededRandom() - 0.5) * 4.0;
+            obj.friction = 0.85;
+            obj.restitution = 0;
+            obj._falling = true;
+            activeFallers++;
+        }
+
+        let spawnTimer = 0;
+        const spawnInterval = 0.6;
+        const spawnDelay = 3.0;
+        let spawnCount = 0;
+        const maxSpawn = 15;
+        let slime = null;
+        let slimeRenderer = null;
+
+        function update(dt) {
+            spawnTimer += dt;
+            if (spawnCount < maxSpawn) {
+                const interval = spawnCount === 0 ? spawnDelay : spawnInterval;
+                if (spawnTimer >= interval) {
+                    spawnShape();
+                    spawnCount++;
+                    spawnTimer = 0;
+                }
+            } else if (!slime && activeFallers === 0) {
+                const top = cameraCenterY + worldHeight / 2;
+                slimeRenderer = new MixedSlimeRenderer(ez);
+                document.body.appendChild(slimeRenderer.mainSVG);
+                slime = new MixedSlime(world, slimeRenderer, 0, top + 2, { radius: 2, groundAccel: 0.1, airAccel: 0.02, maxHorizSpeed: 1.6 });
+            }
+
+            if (slime) slime.preStep(dt);
+            world.step(dt, 1 / 544, 40);
+            freezeOnContact();
+
+            ez.clear();
+            ez.ctx.lineWidth = 1;
+            ez.gridSvg(1, Infinity);
+            ez.ctx.lineWidth = 1.5;
+
+            ez.save();
+            ez.ctx.shadowColor = "rgba(0,0,0,0.25)";
+            ez.ctx.shadowBlur = 4;
+            ez.ctx.shadowOffsetX = 0;
+            ez.ctx.shadowOffsetY = 0;
+            ez.textWorldScaled("Collision Detection & Contact Generation\nExplained", vec2(0, cameraCenterY + 2.25), {
+                fontSize: 12.8,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontStyle: "bold",
+                textAlign: "center",
+                textBaseline: "middle"
+            }).fill("#000000");
+            ez.restore();
+
+            ez.save();
+            ez.ctx.shadowColor = "rgba(0,0,0,0.2)";
+            ez.ctx.shadowBlur = 3;
+            ez.ctx.shadowOffsetX = 0;
+            ez.ctx.shadowOffsetY = 0;
+            ez.textWorldScaled("Part of the physics engine tutorial series created by Majikayo Games", vec2(0, cameraCenterY + 0.3), {
+                fontSize: 3.2,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                textAlign: "center",
+                textBaseline: "middle"
+            }).fill("#000000");
+            ez.restore();
+
+            PhysRenderer.render(world);
+            for (const p of permanentContacts) {
+                ez.circle(vec2(p.x, p.y), 0.04).fillAndStroke("#FF6B6B44", PhysRenderer.colors.outline);
+            }
+            if (slime) slime.render();
+        }
+
+        playCurtainIntro(canvas);
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>

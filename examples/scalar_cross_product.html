@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scalar-Vector Cross Product Visualization</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+    <style>
+        body { margin: 0; display: flex; justify-content: center; align-items: center; min-height: 100vh; background-color: #f0f0f0; }
+        canvas { display: block; background-color: white; }
+    </style>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage({ antialias: true, alpha: false, targetFPS: 60 });
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 0), vec2(10, 6), true); // Adjusted camera for better view
+
+        let radius = 1.0; // Radius of the circle
+        let particleAngle = 0; // Angle of the particle on the circle
+        let radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle)); // Position vector on unit circle
+        let angularVelocity = 1.0; // Initial angular velocity ω (radians/second)
+        let dragging = null;
+        let pathPoints = [];
+        // Fade time for the trail (seconds until a point fully fades)
+        const fadeTime = 2;
+
+        const data = {
+            "Angular Velocity (ω)": angularVelocity,
+            "Radius (r)": radius,
+            _hints: {
+                "Radius (r)": { min: 0.1, max: 3, step: 0.1 },
+                "Angular Velocity (ω)": { min: -5, max: 5, step: 0.1 },
+            }
+        };
+
+        const dataCallbacks = {
+            "Angular Velocity (ω)": (value) => {
+                angularVelocity = value;
+                // Keep the existing path points when changing angular velocity
+            },
+            "Radius (r)": (value) => {
+                let oldRadius = radius;
+                radius = value;
+                radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle));
+                
+                // Scale existing path points to new radius instead of clearing them
+                if (oldRadius > 0 && pathPoints.length > 0) {
+                    let scaleFactor = radius / oldRadius;
+                    pathPoints.forEach(point => {
+                        point.pos = point.pos.scaled(scaleFactor);
+                    });
+                }
+            }
+        };
+
+        ez.gui(data, dataCallbacks, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true,
+            width: 300
+        });
+
+        ez.onMouseDown(() => {
+            let mousePos = ez.getMousePosWorld();
+            // Check if dragging the tip of the radius vector
+            if (mousePos.sub(radiusVector).length() < 0.3) {
+                dragging = 'radius';
+            }
+        });
+
+        ez.onMouseUp(() => {
+            dragging = null;
+        });
+
+        ez.onMouseDrag(() => {
+            if (dragging === 'radius') {
+                let mousePos = ez.getMousePosWorld();
+                let oldRadius = radius;
+                // Update both radius and angle based on mouse position
+                radius = mousePos.length();
+                particleAngle = Math.atan2(mousePos.y, mousePos.x);
+                radiusVector = vec2(radius * Math.cos(particleAngle), radius * Math.sin(particleAngle));
+                data["Radius"] = parseFloat(radius.toFixed(3));
+                
+                // Scale existing path points to new radius instead of clearing them
+                if (oldRadius > 0 && pathPoints.length > 0) {
+                    let scaleFactor = radius / oldRadius;
+                    pathPoints.forEach(point => {
+                        point.pos = point.pos.scaled(scaleFactor);
+                    });
+                }
+            }
+        });
+        
+        function formatNumber(num, digits = 2) {
+            if (num === undefined || num === null) return "N/A";
+            return (num.toFixed(digits) === "-" + (0).toFixed(digits) ? (0).toFixed(digits) : num.toFixed(digits));
+        }
+
+        function update(dt) {
+            ez.clear();
+            drawGrid();
+
+            // Calculate linear velocity vector using ezdraw's built-in crossSv method
+            let linearVelocityVector = radiusVector.crossSv(angularVelocity);
+
+            // Animate particle along the circular path if path is shown
+            if (angularVelocity !== 0) {
+                particleAngle += angularVelocity * dt; // Update angle based on angular velocity
+                // Ensure radiusVector is updated to reflect the particle's current position on the animated path
+                // This makes the "Radius Vector" draggable point represent the current animated particle
+                let rMag = radius; // Use the radius variable instead of calculating from vector
+                if (rMag > 0) { // Only update if radius is non-zero
+                    radiusVector = vec2(rMag * Math.cos(particleAngle), rMag * Math.sin(particleAngle));
+                    data["Radius"] = parseFloat(radiusVector.length().toFixed(3));
+
+                    // Store path points each frame for smoother trail (avoid 1-frame lag)
+                    pathPoints.push({ pos: vec2(radiusVector.x, radiusVector.y), alpha: 1.0 });
+                    if (pathPoints.length > 400) pathPoints.shift();
+                }
+            }
+
+            // Fade the trail
+            for (let i = pathPoints.length - 1; i >= 0; i--) {
+                pathPoints[i].alpha -= dt / fadeTime;
+                if (pathPoints[i].alpha <= 0) pathPoints.splice(i, 1);
+            }
+
+            drawVectors(radiusVector, linearVelocityVector);
+            drawLabels(radiusVector, linearVelocityVector);
+            drawCircularPath(radius);
+        }
+
+        function drawGrid() {
+            ez.grid(vec2(1, 1), 50).stroke(0xcccccc); // Main grid
+        }
+
+        function drawVectors(rVec, vLinearVec) {
+            // Center point
+            ez.circle(vec2(0,0), 0.08).fill(0x333333);
+
+            // Radius vector (r)
+            ez.arrow(vec2(0, 0), rVec, 10).fillAndStroke("#FF6347", "#FF6347", { lineWidth: 3 }); // Tomato color
+
+            // Linear velocity vector (v_linear) - drawn at the tip of r
+            ez.arrow(rVec, rVec.add(vLinearVec), 10).fillAndStroke("#32CD32", "#32CD32", { lineWidth: 3 }); // LimeGreen color
+        }
+
+        function drawLabels(rVec, vLinearVec) {
+            const textStyle = { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 14, fontStyle: "normal", textAlign: 'center' };
+            const rColor = "#C70039"; // Darker red for text
+            const vColor = "#006400"; // Darker green for text
+
+            // Label for radius vector r
+            let rLabelPos = rVec.scaled(0.5).add(rVec.normalized().rotated(Math.PI/2).scaled(0.2));
+             if (rVec.length() < 0.4) rLabelPos = rVec.add(vec2(0.1, 0.1));
+            ez.textBuffered("r", rLabelPos, textStyle).fill(rColor);
+            //ez.textBuffered(`(${formatNumber(rVec.x)}, ${formatNumber(rVec.y)})`, rVec.add(vec2(0, -0.25)), { ...textStyle, fontSize: 12 }).fill(rColor);
+
+            // Label for linear velocity vector v
+            let vLabelPosOffset = vLinearVec.normalized().rotated(-Math.PI/2).scaled(0.2);
+            if (vLinearVec.length() < 0.2) vLabelPosOffset = vec2(0.1, 0.1);
+            let vLabelPos = rVec.add(vLinearVec.scaled(0.5)).add(vLabelPosOffset);
+            
+            ez.textBuffered("v", vLabelPos, textStyle).fill(vColor);
+            //ez.textBuffered(`v × r = (${formatNumber(vLinearVec.x)}, ${formatNumber(vLinearVec.y)})`, rVec.add(vLinearVec).add(vec2(0, 0.25)), { ...textStyle, fontSize: 12 }).fill(vColor);
+            //ez.textBuffered(`|v| = ${formatNumber(vLinearVec.length())}`, rVec.add(vLinearVec).add(vec2(0, 0.50)), { ...textStyle, fontSize: 12 }).fill(vColor);
+
+            // Display angular velocity and linear velocity
+            ez.text(`ω = ${formatNumber(angularVelocity)} rad/s\nr = (${formatNumber(rVec.x)}, ${formatNumber(rVec.y)})\nv = ω × r = (${formatNumber(vLinearVec.x)}, ${formatNumber(vLinearVec.y)})\n|v| = ${formatNumber(vLinearVec.length())} m/s`, vec2(0, 2.2), { ...textStyle, fontSize: 16, textAlign: "center", textBaseline: "middle" }).fill("black");
+        }
+
+        function drawCircularPath(radius) {
+            if (radius > 0.01) {
+                 // Draw the full circle outline
+                ez.circle(vec2(0,0), radius).stroke(0xaaaaaa, { lineWidth: 1, lineDash: [5,5] });
+
+                // Draw the traced (fading) path of the particle
+                if (pathPoints.length > 1) {
+                    // To improve performance, we don't draw every single segment when there are many points.
+                    // Instead, we subsample the path while always including the first and last points.
+                    const maxSegmentsToDraw = 40; // Adjust this for smoother trail vs. speed
+                    const lastIndex = pathPoints.length - 1;
+
+                    if (lastIndex === 1) {
+                        // Simple case: only one segment to draw
+                        const a = Math.min(pathPoints[0].alpha, pathPoints[1].alpha);
+                        ez.line(pathPoints[0].pos, pathPoints[1].pos).stroke("#0077cc", { lineWidth: 2, globalAlpha: a });
+                    } else {
+                        const totalSegments = lastIndex;
+                        const step = Math.max(1, Math.floor(totalSegments / maxSegmentsToDraw));
+
+                        let prevIndex = 0;
+                        for (let i = step; i < lastIndex; i += step) {
+                            const a = Math.min(pathPoints[prevIndex].alpha, pathPoints[i].alpha);
+                            ez.line(pathPoints[prevIndex].pos, pathPoints[i].pos).stroke("#0077cc", { lineWidth: 2, globalAlpha: a });
+                            prevIndex = i;
+                        }
+
+                        // Ensure we always connect to the last point
+                        if (prevIndex !== lastIndex) {
+                            const a = Math.min(pathPoints[prevIndex].alpha, pathPoints[lastIndex].alpha);
+                            ez.line(pathPoints[prevIndex].pos, pathPoints[lastIndex].pos).stroke("#0077cc", { lineWidth: 2, globalAlpha: a });
+                        }
+                    }
+                }
+            }
+        }
+
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>

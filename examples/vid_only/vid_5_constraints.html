@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Collision Detection & Contact Generation Explained</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_mixed_verlet.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../curtain_intro.js"></script>
+    <script src="../slime-renderer-mixed.js"></script>
+    <script src="../mixed_slime.js"></script>
+    <script src="../self_balancing_ragdoll.js"></script>
+    <script>
+        // Seeded random number generator for deterministic demos
+        let DEMO_SEED; // Decent stack
+        DEMO_SEED = 836432; // Decent stack
+        DEMO_SEED = 795417; // Decent stack, words not too obstructed
+        DEMO_SEED = 929962; // Decent scatter, words not too obstructed
+        DEMO_SEED = 692193; // Decent shape
+        DEMO_SEED = 425736; // Decent shape no slime control needed he just falls
+        //DEMO_SEED = undefined; // Comment this line to use the seed above
+        
+        let rngSeed = DEMO_SEED !== undefined ? DEMO_SEED : Math.floor(Math.random() * 1000000);
+        console.log(`Demo seed: ${rngSeed}`);
+        
+        // Simple seeded RNG using mulberry32
+        function seededRandom() {
+            let t = rngSeed += 0x6D2B79F5;
+            t = Math.imul(t ^ t >>> 15, t | 1);
+            t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+            return ((t ^ t >>> 14) >>> 0) / 4294967296;
+        }
+        
+        const canvas = ez.createCanvasAndAddToPage();
+        // Ensure white page background behind transparent canvas and SVG
+        document.body.style.background = '#ffffff';
+        // SVG overlay for jitter-free text (grid handled via ez.gridSvg)
+        const SVG_NS = "http://www.w3.org/2000/svg";
+        let svg, gTextScreen, svgTitle, svgSubtitle;
+        function setupSvgTextOverlay() {
+            // Ensure grid overlay exists (and its SVG) via ez.gridSvg
+            ez.gridSvg(1, Infinity);
+            svg = ez._svgGridOverlay?.svg;
+            if (!svg) return;
+
+            // Reuse or create defs for shadows
+            let defs = svg.querySelector('defs');
+            if (!defs) {
+                defs = document.createElementNS(SVG_NS, 'defs');
+                svg.appendChild(defs);
+            }
+            let shadowTitle = defs.querySelector('#shadowTitle');
+            if (!shadowTitle) {
+                shadowTitle = document.createElementNS(SVG_NS, 'filter');
+                shadowTitle.setAttribute('id', 'shadowTitle');
+                const feDrop1 = document.createElementNS(SVG_NS, 'feDropShadow');
+                feDrop1.setAttribute('dx', '0');
+                feDrop1.setAttribute('dy', '0');
+                feDrop1.setAttribute('stdDeviation', '4');
+                feDrop1.setAttribute('flood-color', '#000000');
+                feDrop1.setAttribute('flood-opacity', '0.25');
+                shadowTitle.appendChild(feDrop1);
+                defs.appendChild(shadowTitle);
+            }
+            let shadowSub = defs.querySelector('#shadowSub');
+            if (!shadowSub) {
+                shadowSub = document.createElementNS(SVG_NS, 'filter');
+                shadowSub.setAttribute('id', 'shadowSub');
+                const feDrop2 = document.createElementNS(SVG_NS, 'feDropShadow');
+                feDrop2.setAttribute('dx', '0');
+                feDrop2.setAttribute('dy', '0');
+                feDrop2.setAttribute('stdDeviation', '3');
+                feDrop2.setAttribute('flood-color', '#000000');
+                feDrop2.setAttribute('flood-opacity', '0.2');
+                shadowSub.appendChild(feDrop2);
+                defs.appendChild(shadowSub);
+            }
+
+            // Screen-space text group (avoid vertical flip from camera)
+            gTextScreen = document.createElementNS(SVG_NS, 'g');
+            gTextScreen.setAttribute('fill', '#000');
+            svg.appendChild(gTextScreen);
+
+            svgTitle = document.createElementNS(SVG_NS, 'text');
+            svgTitle.setAttribute('text-anchor', 'middle');
+            svgTitle.setAttribute('dominant-baseline', 'middle');
+            svgTitle.setAttribute('font-family', "'Source Sans Pro', sans-serif");
+            svgTitle.setAttribute('font-weight', '700');
+            svgTitle.setAttribute('filter', 'url(#shadowTitle)');
+            gTextScreen.appendChild(svgTitle);
+
+            svgSubtitle = document.createElementNS(SVG_NS, 'text');
+            svgSubtitle.setAttribute('text-anchor', 'middle');
+            svgSubtitle.setAttribute('dominant-baseline', 'middle');
+            svgSubtitle.setAttribute('font-family', "'Source Sans Pro', sans-serif");
+            svgSubtitle.setAttribute('filter', 'url(#shadowSub)');
+            gTextScreen.appendChild(svgSubtitle);
+        }
+        setupSvgTextOverlay();
+        ez.centerOrigin = true;
+
+        const worldHeight = 16;
+        const cameraCenterY = -0.8;
+        let worldWidth;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, cameraCenterY), vec2(worldWidth, worldHeight), true);
+        }
+
+        updateCamera();
+        
+        // Smooth zoom-out camera that keeps bottom-left anchored
+        let zoomTimer = 0;
+        let zoomDelay = 5.0; // delay before starting zoom (seconds)
+        const zoomDuration = 8.0; // seconds
+        const zoomStart = 0.5; // start 2x zoomed IN (smaller view size)
+        const zoomEnd = 1.0;   // end at original view (1x)
+        let baseBottomLeft = null; // world-space anchor for bottom-left
+
+        function easeInOutCubic(t) {
+            return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function initCameraAnchor() {
+            const aspect = canvas.width / canvas.height;
+            const baseWidth = worldHeight * aspect;
+            baseBottomLeft = vec2(-baseWidth * 0.5, cameraCenterY - worldHeight * 0.5);
+        }
+
+        function applyCamera(dt) {
+            if (baseBottomLeft === null) initCameraAnchor();
+            // Wait until delay elapses, then advance zoom timer until target
+            if (zoomDelay > 0) {
+                zoomDelay = Math.max(0, zoomDelay - dt);
+            } else if (zoomTimer < zoomDuration) {
+                zoomTimer = Math.min(zoomDuration, zoomTimer + dt);
+            }
+            const t = easeInOutCubic(zoomTimer / zoomDuration);
+            const zoom = zoomStart + (zoomEnd - zoomStart) * t;
+
+            const aspect = canvas.width / canvas.height;
+            const viewHeight = worldHeight * zoom;
+            const viewWidth = viewHeight * aspect;
+
+            // Keep bottom-left fixed at baseBottomLeft as we zoom
+            const centerX = baseBottomLeft.x + viewWidth * 0.5;
+            const centerY = baseBottomLeft.y + viewHeight * 0.5;
+
+            ez.letterBoxCamera(vec2(centerX, centerY), vec2(viewWidth, viewHeight), true);
+        }
+
+        function updateSvgFromCamera() {
+            if (!svg) return;
+            // Update text in screen-space to avoid vertical flipping; compute screen positions and pixel font sizes
+            const titleWorldPos = vec2(0, cameraCenterY + 2.25);
+            const subWorldPos = vec2(0, cameraCenterY + 0.3);
+            const titleScreen = ez.worldToScreen(vec3(titleWorldPos.x, titleWorldPos.y, 0));
+            const subScreen = ez.worldToScreen(vec3(subWorldPos.x, subWorldPos.y, 0));
+            // Match ez.textWorldScaled scaling: fontSize / yScale * 0.1, where yScale = |camera.col2|
+            const yScale = Math.hypot(ez.camera.matrix.col2.x, ez.camera.matrix.col2.y);
+            const titleSizePx = (12.8 / yScale) * 0.1;
+            const subSizePx = (3.2 / yScale) * 0.1;
+
+            // Title (multi-line) – match ez.text baseline math
+            svgTitle.setAttribute('x', String(titleScreen.x));
+            while (svgTitle.firstChild) svgTitle.removeChild(svgTitle.firstChild);
+            svgTitle.setAttribute('font-size', String(titleSizePx));
+            const titleLines = ["Solving Physics Constraints", "Explained"];
+            const lineHeight = titleSizePx * 1.2;
+            const totalHeight = titleLines.length * lineHeight;
+            const startY = titleScreen.y - totalHeight / 2 + lineHeight / 2;
+            for (let i = 0; i < titleLines.length; i++) {
+                const tspan = document.createElementNS(SVG_NS, 'tspan');
+                tspan.setAttribute('x', String(titleScreen.x));
+                tspan.setAttribute('y', String(startY + i * lineHeight));
+                tspan.setAttribute('dominant-baseline', 'middle');
+                tspan.textContent = titleLines[i];
+                svgTitle.appendChild(tspan);
+            }
+
+            // Subtitle (single line)
+            svgSubtitle.setAttribute('x', String(subScreen.x));
+            svgSubtitle.setAttribute('y', String(subScreen.y));
+            svgSubtitle.setAttribute('font-size', String(subSizePx));
+            svgSubtitle.textContent = "Part of the physics engine tutorial series created by Majikayo Games";
+        }
+
+        initCameraAnchor();
+        window.addEventListener('resize', () => { applyCamera(0); ez.gridSvg(1, Infinity); updateSvgFromCamera(); });
+
+        const world = new PhysWorldMixed();
+        world.gravity = new Vec2(0, -9.81);
+        world.constraintIterations = 25; // stiffer, more responsive joints (matches standalone ragdoll)
+
+        const groundY = cameraCenterY - worldHeight / 2 + 0.5;
+        const floor = world.addBox(0, groundY, worldWidth*2, 1, 1, true);
+        floor.restitution = 0.0;
+        floor.friction = 1.0;
+        // Exclude chain bit so chain doesn't collide with the floor (slime still does)
+        floor.collisionMask = 0x3FFFFF;
+
+        // Windmills (blades collide only with slime) and chain (collides only with slime)
+        const WINDMILL_MASK = 0x800000; // choose a bit not used by ragdoll's 0x0F0000
+        const CHAIN_MASK = 0x400000;
+        function createWindmill(pivotX, pivotY, bladeLen = 5, bladeThick = 0.35, speed = 2, color = "#BAE1FF") {
+            // Make the stand reach from ground top to the pivot
+            const groundTopY = groundY + 0.5;
+            const standH = Math.max(0.5, pivotY - groundTopY);
+            const standCY = groundTopY + standH * 0.5;
+            const base = world.addBox(pivotX, standCY, 0.6, standH, 1, true);
+            base.collisionMask = 0; // non-colliding base
+            const blade = world.addBox(pivotX, pivotY, bladeLen, bladeThick, 1);
+            blade._renderColorHint = color;
+            blade.collisionMask = WINDMILL_MASK; // only collide with things that include this bit (slime does via custom handling)
+
+            const motor = world.addRevoluteConstraint(base, blade, new Vec2(pivotX, pivotY));
+            motor.motorEnabled = true;
+            motor.motorSpeed = speed;
+            motor.maxMotorForce = 6;
+            return { base, blade, motor };
+        }
+
+        // Place windmills near left/right edges inside the current view
+        const leftPivotX = baseBottomLeft.x + 1.6 + 3.0;
+        const rightPivotX = baseBottomLeft.x + worldWidth - 1.6 - 3.0;
+        const pivotY = cameraCenterY + 0.2;
+        createWindmill(leftPivotX, pivotY, 5, 0.35, -2.0, "#BAE1FF");
+        createWindmill(rightPivotX, pivotY, 5, 0.35, 2.0, "#FFE5A3");
+
+        // Center ceiling piece and diamond chain (like iterative_solver)
+        const topWorldY = cameraCenterY + worldHeight * 0.5;
+        const ceilingH = 0.5;
+        const ceiling = world.addBox(0, topWorldY - ceilingH * 0.5, worldWidth + 2, ceilingH, 1, true);
+        ceiling.collisionMask = 0; // purely visual anchor
+
+        function createDiamondChain(startX, length, size = 1.0, angleFromUpDeg = 30) {
+            const links = [];
+            const sqrt2 = Math.sqrt(2);
+            const diagonal = size * sqrt2;
+            const halfDiagonal = diagonal * 0.5;
+            const anchorY = topWorldY - ceilingH; // bottom edge of ceiling bar
+            const anchorBase = new Vec2(startX, anchorY);
+            const angleRad = angleFromUpDeg * Math.PI / 180;
+            // Direction 30° left from up: phi = +90° + angle
+            const phi = Math.PI / 2 + angleRad;
+            const dir = new Vec2(Math.cos(phi), Math.sin(phi));
+
+            for (let i = 0; i < length; i++) {
+                // Build at a fixed angle from up, offsetting centers along dir
+                const center = anchorBase.add(dir.scale(halfDiagonal + i * diagonal));
+                const box = world.addBox(center.x, center.y, size, size);
+                // Rotate each diamond by the same angle so it's as if the whole chain was rotated
+                box.rotation = Math.PI / 4 + angleRad;
+                box.collisionMask = CHAIN_MASK; // chain collides only with bodies that include this bit (slime)
+                box.collisionMaskIgnore = CHAIN_MASK; // but ignore self-collisions between chain links
+                box.isStatic = true; // start frozen until release time
+                links.push(box);
+
+                if (i > 0) {
+                    // Joint along the chain axis (every diagonal apart from the anchor)
+                    const jointPos = anchorBase.add(dir.scale(i * diagonal));
+                    world.addRevoluteConstraint(links[i - 1], box, jointPos);
+                } else {
+                    const anchorPos = anchorBase;
+                    world.addRevoluteConstraint(ceiling, box, anchorPos);
+                }
+            }
+            return links;
+        }
+
+        // Build one centered chain (starts static, upside-down)
+        let chainLinks = createDiamondChain(0, 7, 1.0, 100);
+        let chainReleased = false;
+
+        PhysRenderer._renderConstraints = true;
+
+        // Spawn a self-balancing ragdoll at bottom-left, give slight push right
+        let walker = null;
+        (function spawnWalker() {
+            const spawnOffsetX = 1.0; // meters from left edge
+            const spawnX = baseBottomLeft.x + spawnOffsetX;
+            walker = spawnSelfBalancingRagdoll(world, spawnX, groundY + 2.45);
+            // gentle rightward nudge
+            //walker.rig.limbs["pelvis"].body.velocity = new Vec2(2.8, 0);
+            setTimeout(() => {
+                walker.rig.limbs["chest"].body.velocity = new Vec2(28.8, 0);
+            }, 1000);
+            //walker.rig.limbs["chest"].body.velocity = new Vec2(4.8, 0);
+        })();
+
+        // Slime state
+        let slime = null;
+        let slimeRenderer = null;
+
+        function update(dt) {
+            // Apply smooth zoom-out camera first so all rendering uses updated view
+            applyCamera(dt);
+            // Update SVG grid via library helper and then update text overlay
+            ez.gridSvg(1, Infinity);
+            updateSvgFromCamera();
+            // Release chain ~1s before zoom completes so it swings down
+            const releaseLead = 4.5;
+            if (chainLinks && !chainReleased && (zoomDuration - zoomTimer) <= releaseLead) {
+                for (const b of chainLinks) {
+                    b.isStatic = false;
+                    // slight leftward nudge so it swings more
+                    b.velocity = new Vec2(-0.8, b.velocity.y);
+                }
+                chainReleased = true;
+            }
+
+            // Spawn slime ~3s before zoom finishes, just off the left edge at ground height
+            if (!slime && (zoomDuration - zoomTimer) <= 3.0) {
+                slimeRenderer = new MixedSlimeRenderer(ez);
+                document.body.appendChild(slimeRenderer.mainSVG);
+                const leftEdgeX = baseBottomLeft.x;
+                const spawnX = leftEdgeX - 2.5; // just outside view
+                slime = new MixedSlime(world, slimeRenderer, spawnX, groundY + 2, { radius: 2, groundAccel: 0.1, airAccel: 0.02, maxHorizSpeed: 1.6 });
+                // Ensure slime collides with floor, chain, and windmills
+                for (const p of [slime.slime.center, ...slime.slime.nodes]) {
+                    // Collide with floor and chain, but NOT windmills or ragdoll
+                    const RAGDOLL_MASK = 0x0F0000;
+                    p.collisionMask = (0xFFFFFF & ~WINDMILL_MASK & ~RAGDOLL_MASK);
+                    p.collisionMaskIgnore = 0;
+                }
+            }
+
+            if (walker) walker.update(dt);
+            if (slime) slime.preStep(dt);
+            world.step(dt, walker ? walker.fixedDt : 1 / 544, walker ? walker.maxSubsteps : 40);
+
+            ez.clear();
+            // Grid and titles moved to SVG for jitter-free scaling
+            // ez.ctx.lineWidth = 1;
+            // ez.grid(1, Infinity).stroke(0xbbbbbb);
+            // ez.ctx.lineWidth = 1.5;
+
+            // Title now drawn via SVG
+
+            // Subtitle now drawn via SVG
+
+            PhysRenderer.render(world);
+            // no permanent contact dots in this demo
+            if (slime) slime.render();
+        }
+
+        playCurtainIntro(canvas);
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>

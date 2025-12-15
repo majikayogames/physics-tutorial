@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Iterative Solver (Minimal, No Contacts)</title>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="simple_phys_minimal_no_contacts.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage();
+        ez.centerOriginX = true;
+        ez.letterBoxCamera(vec2(0, -2.5), vec2(11.6, 5.5), true);
+
+        let world = new PhysWorld();
+
+        function clearScene() {
+            world.objects = [];
+            world.constraints = [];
+        }
+
+        function createChain(startX, length, size = 0.5, initialImpulse = new Vec2(0, 0)) {
+            const links = [];
+            const sqrt2 = Math.sqrt(2);
+            const diagonal = size * sqrt2;
+            const halfDiagonal = diagonal / 2;
+
+            // Anchor (static ceiling)
+            const ceilingHeight = 0.5;
+            const ceiling = world.addBox(startX, ceilingHeight / 2, 50, ceilingHeight, 1, true);
+
+            for (let i = 0; i < length; i++) {
+                const y = -halfDiagonal - (i * diagonal);
+                const box = world.addBox(startX, y, size, size);
+                box.rotation = Math.PI / 4;
+                links.push(box);
+
+                if (i === 0) {
+                    const anchorPos = new Vec2(startX, 0);
+                    world.addRevoluteConstraint(ceiling, box, anchorPos);
+                } else {
+                    const jointPos = new Vec2(startX, -(i * diagonal));
+                    world.addRevoluteConstraint(links[i - 1], box, jointPos);
+                }
+
+                if (initialImpulse.length() > 0.00001) {
+                    const scaleFactor = (i + 1) / length;
+                    box.velocity = initialImpulse.scale(scaleFactor);
+                }
+            }
+            return { links, ceiling };
+        }
+
+        // Defaults
+        const defaultLinks = 7;
+        const defaultPhysicsFPS = 240;
+        const defaultIterations = world.constraintIterations;
+        const defaultBaumgarte = world.baumgarteFactor;
+
+        // GUI controls
+        const controls = {
+            "Number of Links": defaultLinks,
+            "Physics FPS": defaultPhysicsFPS,
+            "Constraint Iterations": defaultIterations,
+            "Baumgarte": defaultBaumgarte,
+            _hints: {
+                "Number of Links": { min: "0", step: "1" },
+                "Physics FPS": { min: "10", step: "1" },
+                "Constraint Iterations": { min: "1", step: "1" },
+                "Baumgarte": { min: "0", step: "0.01" }
+            }
+        };
+
+        let chain = null;
+
+        function setupChainScene() {
+            clearScene();
+            chain = createChain(0, controls["Number of Links"], 0.5, new Vec2(3, 0));
+        }
+
+        ez.gui(controls, {
+            "Number of Links": (val) => {
+                const n = Math.max(0, Math.floor(val));
+                if (!chain) return;
+                const current = chain.links.length;
+                if (n === current) return;
+
+                if (n < current) {
+                    for (let i = current - 1; i >= n; i--) {
+                        const link = chain.links.pop();
+                        world.constraints = world.constraints.filter(c => c.bodyA !== link && c.bodyB !== link);
+                        world.objects = world.objects.filter(b => b !== link);
+                    }
+                } else {
+                    const size = 0.5;
+                    const diagonal = size * Math.sqrt(2);
+
+                    if (current === 0) {
+                        const y = -(diagonal / 2);
+                        const first = world.addBox(0, y, size, size);
+                        first.rotation = Math.PI / 4;
+                        world.addRevoluteConstraint(chain.ceiling, first, new Vec2(0, 0));
+                        chain.links.push(first);
+                    }
+
+                    let lastLink = chain.links[chain.links.length - 1];
+                    for (let i = current; i < n; i++) {
+                        const localJointPos = new Vec2(-size/2, -size/2);
+                        const jointPos = lastLink.localToWorld(localJointPos);
+                        const diff = jointPos.sub(lastLink.position);
+                        const newBoxPos = jointPos.add(diff);
+                        const box = world.addBox(newBoxPos.x, newBoxPos.y, size, size);
+                        box.rotation = lastLink.rotation;
+                        box.velocity = new Vec2(lastLink.velocity.x, lastLink.velocity.y);
+                        world.addRevoluteConstraint(lastLink, box, jointPos);
+                        chain.links.push(box);
+                        lastLink = box;
+                    }
+                }
+            },
+        }, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        });
+
+        setupChainScene();
+
+        function update(dt) {
+            ez.clear();
+            ez.ctx.lineWidth = 1;
+            ez.grid(1, 50).stroke(0xbbbbbb);
+            ez.ctx.lineWidth = 1.5;
+            ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey");
+            ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey");
+
+            PhysRenderer.render(world);
+
+            world.constraintIterations = controls["Constraint Iterations"];
+            world.baumgarteFactor = controls["Baumgarte"];
+            world.step(dt, 1 / controls["Physics FPS"]);
+        }
+
+        ez.callAnimate(update, true);
+        PhysRenderer.initMouseControls(world);
+    </script>
+</body>
+</html>
+
+

@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Euler vs. Kinematic Equation</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+  <style>
+    .ezgui-floating-window {
+      z-index: 1001 !important;
+    }
+  </style>
+</head>
+<body>
+  <!-- EzDraw helper library -->
+  <script src="ezdraw.js"></script>
+  <script>
+    // Minimal 2-D vector utilities – only what we need for the demo
+    class Vec2 {
+      constructor(x = 0, y = 0) { this.x = x; this.y = y; }
+      add(o) { return new Vec2(this.x + o.x, this.y + o.y); }
+      sub(o) { return new Vec2(this.x - o.x, this.y - o.y); }
+      scale(s) { return new Vec2(this.x * s, this.y * s); }
+    }
+  </script>
+  <script>
+    // Re-use the nicely shaded pebble SVG from force_work_energy.html
+    const pebbleSvg = `
+<svg width="100" height="100" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="pebbleGrad" cx="45%" cy="40%">
+      <stop offset="0%" style="stop-color:#D4C4A6"/>
+      <stop offset="40%" style="stop-color:#C4B090"/>
+      <stop offset="80%" style="stop-color:#B8A082"/>
+      <stop offset="100%" style="stop-color:#9A8570"/>
+    </radialGradient>
+    <filter id="blur"><feGaussianBlur in="SourceGraphic" stdDeviation="0.5"/></filter>
+  </defs>
+  <path d="M43 61 C 36 58, 36 48, 43 45 C 48 42, 54 42, 59 45 C 66 48, 66 58, 59 61 C 56 67, 48 68, 43 61Z" fill="url(#pebbleGrad)" stroke="black" stroke-width="1"/>
+  <ellipse cx="48" cy="49" rx="6" ry="4" fill="#C8B898" opacity="0.4" filter="url(#blur)" transform="rotate(-20 48 49)"/>
+  <path d="M46 58 C 48 59, 51 59, 53 58 C 54 59, 53 61, 51 62 C 49 62, 47 61, 46 60 C 46 59, 46 58, 46 58Z" fill="#8A7560" opacity="0.3" filter="url(#blur)"/>
+</svg>`;
+    const pebbleUrl = 'data:image/svg+xml;base64,' + btoa(pebbleSvg);
+  </script>
+  <script>
+    // ---------------- Simulation parameters ----------------
+    let accel = -9.81;           // gravity acceleration (downward) - now mutable
+    const eulerStep = 1/60;       // step size for Euler integration (s)
+    const maxTime = 20;          // seconds before we loop and restart (extended)
+    const initialVelX = 3;       // initial horizontal velocity (m/s)
+
+    // Track gravity changes for delay logic
+    let lastGravityChangeTime = 0;
+    let gravityDelayActive = false;
+    const gravityDelayDuration = 3; // seconds to delay reset after gravity change
+
+    // Euler state variables
+    let eulerTime = 0;
+    let eulerPos = vec2(0, 0);   // position (x, y)
+    let eulerVel = vec2(initialVelX, 0); // velocity (x, y) m/s
+    let eulerTotalDist = 0;
+
+    // Analytic state vars
+    let time = 0;
+    let analyticPos = vec2(0, 0); // position (x, y)
+    let analyticVel = vec2(initialVelX, 0); // velocity (x, y) m/s
+    let analyticTotalDist = 0;
+
+    const analyticTrail = [];
+    const eulerTrail   = [];
+    const maxTrailPts = 1000     // keep the last N positions for dotted trails
+
+    // --------------- Rendering helpers -------------------
+
+    // Setup EzDraw canvas & camera
+    const canvas = ez.createCanvasAndAddToPage();
+    ez.centerOrigin = true;
+    // Position camera so (0,0) is near top-left, with some padding
+    const viewWidth = 15;
+    const viewHeight = 15;
+    //let cameraCenter = vec2(viewWidth/2 - 0.5, -viewHeight/2 + 0.5);
+    let cameraCenter = vec2(0, 0);
+    ez.letterBoxCamera(cameraCenter, vec2(viewWidth, viewHeight), true);
+
+    // -------------- Main update loop ----------------------
+    function update(dt) {
+      dt = Math.min(dt, 1/30);
+      // Convert dt from milliseconds (EzDraw gives seconds) – it is already seconds
+      // Advance simulation time
+      time += dt;
+
+      let prevAnalyticPos = analyticPos.clone();
+      // ----- Analytic solution (exact) -----
+      analyticPos.x = analyticVel.x * time;
+      analyticPos.y = analyticPos.y + analyticVel.y * dt + 0.5 * accel * dt * dt;
+      analyticVel.y = analyticVel.y + accel * dt;
+
+      let analyticPosDiff = analyticPos.sub(prevAnalyticPos);
+      analyticTotalDist += analyticPosDiff.magnitude();
+      // Store analytic trail point
+      analyticTrail.push(analyticPos.clone());
+      if (analyticTrail.length > maxTrailPts) analyticTrail.shift();
+
+      let prevEulerPos = eulerPos.clone();
+      // ----- Euler approximation (fixed timestep) -----
+      // Use fixed timestep for Euler to show consistent error accumulation
+      eulerVel.y += accel * dt;
+      eulerPos.x = eulerVel.x * time;
+      eulerPos.y += eulerVel.y * dt;
+      eulerTime += dt;
+
+      let eulerPosDiff = eulerPos.sub(prevEulerPos);
+      eulerTotalDist += eulerPosDiff.magnitude();
+      eulerTrail.push(eulerPos.clone());
+      if (eulerTrail.length > maxTrailPts) eulerTrail.shift();
+
+      // Camera following - track the average position of both objects
+      if (analyticTrail.length > 0 && eulerTrail.length > 0) {
+        const analyticPos = analyticTrail[analyticTrail.length - 1];
+        const eulerPos = eulerTrail[eulerTrail.length - 1];
+        const avgPos = new Vec2((analyticPos.x + eulerPos.x) / 2, (analyticPos.y + eulerPos.y) / 2);
+        
+        // Smoothly move camera to follow the objects
+        cameraCenter = cameraCenter.lerp(avgPos, .7);
+        
+        ez.letterBoxCamera(cameraCenter, vec2(viewWidth, viewHeight), true);
+      }
+
+      // Loop reset
+      if (time > maxTime) {
+        // Check if we should delay reset due to recent gravity changes
+        const timeSinceGravityChange = time - lastGravityChangeTime;
+        const shouldDelayReset = gravityDelayActive && timeSinceGravityChange < gravityDelayDuration;
+        
+        if (!shouldDelayReset) {
+          time = 0;
+          eulerTime = 0;
+          eulerPos.x = 0;
+          eulerPos.y = 0;
+          eulerVel.x = initialVelX;
+          eulerVel.y = 0;
+          analyticPos.x = 0;
+          analyticPos.y = 0;
+          analyticVel.x = initialVelX;
+          analyticVel.y = 0;
+          analyticTrail.length = 0;
+          eulerTrail.length   = 0;
+          // Reset camera position
+          cameraCenter = vec2(viewWidth/2 - 0.5, -viewHeight/2 + 0.5);
+          ez.letterBoxCamera(cameraCenter, vec2(viewWidth, viewHeight), true);
+          gravityDelayActive = false; // Reset delay flag
+        }
+      }
+
+      // ------------- Drawing -------------
+      ez.clear();
+
+      // Grid & axes for reference
+      ez.ctx.lineWidth = 1;
+      ez.grid(1, Infinity).stroke(0xbbbbbb);
+      ez.ctx.lineWidth = 1.5;
+      ez.line(new Vec2(-1000, 0), new Vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey"); // x-axis (time)
+      ez.line(new Vec2(0, -1000), new Vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey"); // y-axis (displacement)
+
+      // Draw trails (dotted) - only if we have points
+      if (analyticTrail.length > 0) {
+        drawTrail(analyticTrail, "#ff7f0e", 50, 0, -ez.lengthToScreen(analyticTotalDist));   // orange, use velocity magnitude
+        
+        // Draw pebbles at current tips
+        ez.image(pebbleUrl, analyticTrail[analyticTrail.length - 1], 0, 1.8).draw();
+      }
+      
+      if (eulerTrail.length > 0) {
+        drawTrail(eulerTrail, "#1f77b4", 50, 30, -ez.lengthToScreen(eulerTotalDist));   // blue, use velocity magnitude
+        
+        ez.image(pebbleUrl, eulerTrail[eulerTrail.length - 1], 0, 1.8).draw();
+      }
+
+      // Legend positioned on the right side
+      const rightSideScreen = new Vec2(canvas.width - 20, 80); // 20px from right edge, 80px from top
+      const legendStartWorld = ez.screenToWorld(rightSideScreen);
+      const lineLength = 1.2;
+      const textOffset = 1.4;
+      
+      // Orange line sample and label
+      ez.ctx.save();
+      //ez.ctx.setLineDash([4.5, 4.5]);
+      ez.ctx.beginPath();
+      const orangeStart = ez.worldToScreen(legendStartWorld);
+      const orangeEnd = ez.worldToScreen(new Vec2(legendStartWorld.x - lineLength, legendStartWorld.y));
+      ez.ctx.moveTo(orangeStart.x, orangeStart.y);
+      ez.ctx.lineTo(orangeEnd.x, orangeEnd.y);
+      ez.ctx.strokeStyle = "#ff7f0e";
+      ez.ctx.lineWidth = 5;
+      ez.ctx.stroke();
+      ez.ctx.restore();
+      
+      const textOpts = { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'right', fontStyle: '400', textBaseline: 'middle' };
+      ez.text("Analytic (Kinematic)", new Vec2(legendStartWorld.x - textOffset, legendStartWorld.y), textOpts).fill("#333333");
+      
+      // Blue line sample and label  
+      const blueLineWorld = new Vec2(legendStartWorld.x, legendStartWorld.y + 0.6);
+      ez.ctx.save();
+      ez.ctx.setLineDash([7.0, 6.1]);
+      ez.ctx.beginPath();
+      const blueStart = ez.worldToScreen(blueLineWorld);
+      const blueEnd = ez.worldToScreen(new Vec2(blueLineWorld.x - lineLength, blueLineWorld.y));
+      ez.ctx.moveTo(blueStart.x, blueStart.y);
+      ez.ctx.lineTo(blueEnd.x, blueEnd.y);
+      ez.ctx.strokeStyle = "#1f77b4";
+      ez.ctx.lineWidth = 5;
+      ez.ctx.stroke();
+      ez.ctx.restore();
+      
+      ez.text("Euler Approximation", new Vec2(blueLineWorld.x - textOffset, blueLineWorld.y), textOpts).fill("#333333");
+    }
+
+    function drawTrail(points, color, dashLength = 50, dashGap = 30, dashOffset = 0) {
+      if (points.length < 2) return;
+      
+      // Use velocity and time to create flowing dash effect
+      const velocityScale = 20; // Scale factor to make the flow visible
+      
+      // Convert world coordinates to screen coordinates for proper dashing
+      ez.ctx.save();
+      ez.ctx.setLineDash([dashLength, dashGap]);
+      ez.ctx.lineDashOffset = dashOffset; // Negative to advance the pattern
+      ez.ctx.beginPath();
+      
+      // Draw path backwards from end to start
+      const screenEnd = ez.worldToScreen(points[points.length - 1]);
+      ez.ctx.moveTo(screenEnd.x, screenEnd.y);
+      
+      let onePastScreen = 0;
+      for (let i = points.length - 2; i >= 0; i--) {
+        const screenPt = ez.worldToScreen(points[i]);
+        if(onePastScreen == 1){
+          break;
+        }
+        if(screenPt.x < 0){
+          onePastScreen = 1;
+        }
+        ez.ctx.lineTo(screenPt.x, screenPt.y);
+      }
+      
+      ez.ctx.strokeStyle = color;
+      ez.ctx.lineWidth = 3;
+      ez.ctx.stroke();
+      ez.ctx.restore();
+    }
+
+    // GUI controls
+    const controls = {
+      "Gravity": -9.81,
+      "_hints": {
+        "Gravity": {
+          step: 0.01,
+          scrollStep: 1.0
+        }
+      }
+    };
+
+    ez.gui(controls, {
+      "Gravity": (val) => {
+        accel = val;
+        // Track gravity change and activate delay if simulation is about to end
+        if (time > maxTime - gravityDelayDuration) {
+          lastGravityChangeTime = time;
+          gravityDelayActive = true;
+        }
+      }
+    }, {
+      theme: 'minimalist',
+      darkMode: (() => {
+        // Get theme from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const theme = urlParams.get('theme');
+        return theme !== 'light';
+      })(),
+      hideControlsButton: true
+    });
+
+    // ez.onMouseWheel((e) => {
+    //   e.preventDefault();
+    //   controls.Gravity += e.deltaY < 0 ? 1 : -1;
+    // });
+
+    
+    // Kick-off the animation – auto-pause when tab inactive
+    ez.callAnimate(update, true);
+  </script>
+</body>
+</html>

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Matrix Multiplication Step-by-Step</title>
+
+	<!-- KaTeX for math rendering -->
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+	<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+	<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"
+		onload="renderMathInElement(document.body, {
+			delimiters:[
+				{left:'$$', right:'$$', display:true},
+				{left:'\\(', right:'\\)',  display:false}
+			],
+			trust:true
+		}); initAnim();"></script>
+
+	<!-- GSAP for animation -->
+	<script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+
+	<style>
+		body {
+			font-family: sans-serif;
+			background:#fff;
+			text-align:center;
+			margin-top:4rem;
+			margin-bottom:4rem;
+		}
+		.eq {
+			font-size:1.8rem;
+		}
+		/* Matrix elements */
+		.r1c1, .r1c2, .r2c1, .r2c2 { transition: color 0.3s ease; }
+		.col1, .col2 { transition: color 0.3s ease; }
+		.res1, .res2 { transition: color 0.3s ease; }
+		
+		/* Default colors */
+		.r1c1, .r1c2, .r2c1, .r2c2, .col1, .col2, .res1, .res2 { color: #000; }
+	</style>
+</head>
+<body>
+	<div class="eq">
+		$$
+		\mathbf{\Delta \dot{C}}
+		=
+		\begin{bmatrix}
+			\htmlClass{r1c1}{K_{00}} & \htmlClass{r1c2}{K_{01}}\\
+			\htmlClass{r2c1}{K_{10}} & \htmlClass{r2c2}{K_{11}}
+		\end{bmatrix}
+		\begin{bmatrix}
+			\htmlClass{col1}{J_x}\\
+			\htmlClass{col2}{J_y}
+		\end{bmatrix}
+		=
+		\begin{bmatrix}
+			\htmlClass{res1}{J_x K_{00} + J_y K_{01}}\\
+			\htmlClass{res2}{J_x K_{10} + J_y K_{11}}
+		\end{bmatrix}
+		$$
+	</div>
+
+	<script>
+	function initAnim() {
+		setTimeout(() => {
+			const r1c1 = document.querySelectorAll('.r1c1');
+			const r1c2 = document.querySelectorAll('.r1c2');
+			const r2c1 = document.querySelectorAll('.r2c1');
+			const r2c2 = document.querySelectorAll('.r2c2');
+			const col1 = document.querySelectorAll('.col1');
+			const col2 = document.querySelectorAll('.col2');
+			const res1 = document.querySelectorAll('.res1');
+			const res2 = document.querySelectorAll('.res2');
+
+			const tl = gsap.timeline({ repeat: -1, repeatDelay: 1.5 });
+
+			tl
+				// Step 1: Show how first result element is calculated
+				// Highlight row 1 (red) and Jx, Jy (red), result element 1 also red
+				.to([...r1c1, ...r1c2], { duration: 0.4, color: '#e91e63' })
+				.to([...col1, ...col2], { duration: 0.4, color: '#e91e63' }, "<")
+				.to(res1, { duration: 0.4, color: '#e91e63' }, "<0.2")
+				
+				// Hold the highlight
+				.to({}, { duration: 2 })
+				
+				// Fade back to black
+				.to([...r1c1, ...r1c2, ...col1, ...col2, ...res1], { 
+					duration: 0.4, 
+					color: '#000' 
+				})
+				
+				// Pause between steps
+				.to({}, { duration: 0.5 })
+				
+				// Step 2: Show how second result element is calculated
+				// Highlight row 2 (green) and Jx, Jy (green), result element 2 also green
+				.to([...r2c1, ...r2c2], { duration: 0.4, color: '#4caf50' })
+				.to([...col1, ...col2], { duration: 0.4, color: '#4caf50' }, "<")
+				.to(res2, { duration: 0.4, color: '#4caf50' }, "<0.2")
+				
+				// Hold the highlight
+				.to({}, { duration: 2 })
+				
+				// Fade back to black
+				.to([...r2c1, ...r2c2, ...col1, ...col2, ...res2], { 
+					duration: 0.4, 
+					color: '#000' 
+				});
+		}, 100);
+	}
+
+	// Function to send height to parent window
+	function sendHeightToParent() {
+		// Get the equation element to measure its actual space requirements
+		const equation = document.querySelector('.eq');
+		if (!equation) return;
+		
+		// Get the equation's position and size
+		const eqRect = equation.getBoundingClientRect();
+		const bodyStyles = window.getComputedStyle(document.body);
+		const marginTop = parseInt(bodyStyles.marginTop, 10) || 0;
+		const marginBottom = parseInt(bodyStyles.marginBottom, 10) || 0;
+		
+		// Calculate height as: top margin + equation height + bottom margin
+		// This gives us a nicely centered equation without extra space
+		const height = marginTop + eqRect.height + marginBottom;
+		
+		// Post message to parent window
+		if (window.parent && window.parent !== window) {
+			window.parent.postMessage({
+				type: 'iframe-resize',
+				height: height
+			}, '*');
+		}
+	}
+
+	// Send height on load and when content changes
+	window.addEventListener('load', () => {
+		// Initial height send
+		sendHeightToParent();
+		
+		// Send height again after a short delay to account for any animations or font loading
+		setTimeout(sendHeightToParent, 500);
+		
+		// Create a ResizeObserver to watch for content changes
+		if (window.ResizeObserver) {
+			const resizeObserver = new ResizeObserver(() => {
+				sendHeightToParent();
+			});
+			resizeObserver.observe(document.body);
+		}
+	});
+	</script>
+</body>
+</html>

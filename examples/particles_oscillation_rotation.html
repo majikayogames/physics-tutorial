@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Particles, oscillation, rotation</title>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+  <style>
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+    }
+
+    #top-canvas {
+      display: block;
+      width: 100%;
+      height: 50vh;
+    }
+
+    #bottom-graph-wrapper {
+      width: 100%;
+      height: 50vh;
+      font-family: 'Source Sans Pro', sans-serif;
+      border-top: 1px solid #000;
+      box-sizing: border-box;
+      overflow: hidden;
+      padding-left: 8px;
+      padding-bottom: 8px; /* extra space below the graph */
+    }
+
+    #bottom-graph {
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+</head>
+
+<body>
+  <canvas id="top-canvas"></canvas>
+  <div id="bottom-graph-wrapper">
+    <div id="bottom-graph"></div>
+  </div>
+  <script src="ezdraw.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist@2.27.0/plotly.min.js"></script>
+  <script>
+    // Basic version of simple_phys just for particles
+    class Vec2 {
+      constructor(x, y) { this.x = x; this.y = y; }
+      add(other) { return new Vec2(this.x + other.x, this.y + other.y); }
+      sub(other) { return new Vec2(this.x - other.x, this.y - other.y); }
+      scale(scalar) { return new Vec2(this.x * scalar, this.y * scalar); }
+      dot(other) { return this.x * other.x + this.y * other.y; }
+      cross(other) { return this.x * other.y - this.y * other.x; }
+      crossSv(scalar) { return new Vec2(-this.y * scalar, this.x * scalar); }
+      length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+      normalized() { return (Math.abs(this.x) < 0.000000001 && Math.abs(this.y) < 0.000000001) ? new Vec2(1, 0) : this.scale(1 / this.length()); }
+      rotate(angle) { const cos = Math.cos(angle); const sin = Math.sin(angle); return new Vec2(this.x * cos - this.y * sin, this.x * sin + this.y * cos); }
+      rotate90CCW() { return new Vec2(-this.y, this.x); }
+      min(other) { return new Vec2(Math.min(this.x, other.x), Math.min(this.y, other.y)); }
+      max(other) { return new Vec2(Math.max(this.x, other.x), Math.max(this.y, other.y)); }
+    }
+
+    class PhysObject {
+      constructor(x, y, mass) {
+        this.position = new Vec2(x, y);
+        this.velocity = new Vec2(0, 0);
+        this.mass = mass;
+        this.force = new Vec2(0, 0);
+      }
+
+      addForce(f) {
+        this.force = this.force.add(f);
+      }
+
+      step(dt) {
+        // Apply force-based physics: F = ma, so a = F/m
+        const acceleration = this.force.scale(1 / this.mass);
+        this.velocity = this.velocity.add(acceleration.scale(dt));
+        this.position = this.position.add(this.velocity.scale(dt));
+      }
+
+      applyImpulse(impulse) {
+        this.velocity = this.velocity.add(impulse.scale(1 / this.mass));
+      }
+    }
+
+    class SpringConstraint {
+      constructor(objA, objB, restLength, stiffness = 50, damping = 1) {
+        this.objA = objA;
+        this.objB = objB;
+        this.restLength = restLength;
+        this.stiffness = stiffness;
+        this.damping = damping;
+      }
+
+      solve(dt) {
+        const delta = this.objA.position.sub(this.objB.position);
+        const currentLength = delta.length();
+
+        if (currentLength < 0.0001) return; // Avoid division by zero
+
+        const displacement = currentLength - this.restLength;
+        const direction = delta.scale(1 / currentLength); // normalized direction
+
+        // Spring force: F = -k * displacement
+        const springForce = direction.scale(-this.stiffness * displacement);
+
+        // Damping force: F = -c * relative_velocity
+        const relativeVelocity = this.objA.velocity.sub(this.objB.velocity);
+        const dampingForce = direction.scale(-this.damping * direction.dot(relativeVelocity));
+
+        // Total force
+        const totalForce = springForce.add(dampingForce);
+
+        // Apply forces (F = ma, so impulse = F * dt)
+        const impulseA = totalForce.scale(dt);
+        const impulseB = totalForce.scale(-dt);
+
+        this.objA.applyImpulse(impulseA);
+        this.objB.applyImpulse(impulseB);
+      }
+    }
+
+    class CenterConstraint {
+      constructor(objA, objB, centerPosition) {
+        this.objA = objA;
+        this.objB = objB;
+        this.centerPosition = centerPosition;
+      }
+
+      solve(dt) {
+        // Only constrain velocity - keep center of mass velocity at zero
+        const currentCenterVel = this.objA.velocity.add(this.objB.velocity).scale(0.5);
+        const velCorrection = currentCenterVel.scale(-0.5);
+
+        this.objA.velocity = this.objA.velocity.add(velCorrection);
+        this.objB.velocity = this.objB.velocity.add(velCorrection);
+      }
+    }
+
+    class PinConstraint {
+      constructor(obj, fixedPosition) {
+        this.obj = obj;
+        this.fixedPosition = new Vec2(fixedPosition.x, fixedPosition.y);
+      }
+
+      solve(dt) {
+        // Keep the object fixed in place
+        this.obj.position = new Vec2(this.fixedPosition.x, this.fixedPosition.y);
+        this.obj.velocity = new Vec2(0, 0);
+        this.obj.force = new Vec2(0, 0);
+      }
+    }
+
+    class PhysWorld {
+      constructor() {
+        this.objects = [];
+        this.constraints = [];
+        this.gravity = new Vec2(0, -9.81);
+      }
+
+      step(dt) {
+        const substeps = 40;
+        const dtSubstep = dt / substeps;
+
+        for (let k = 0; k < substeps; ++k) {
+          for (const c of this.constraints) c.solve(dtSubstep);
+          for (const obj of this.objects) obj.step(dtSubstep);
+        }
+
+        // Clear forces after each step
+        for (const obj of this.objects) {
+          obj.force = new Vec2(0, 0);
+        }
+      }
+    }
+  </script>
+  <script>
+    // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+    const topCanvas = document.getElementById('top-canvas');
+
+    ez.setCanvas(topCanvas)
+    ez.centerOrigin = true
+    let letterBoxPos = vec2(5,2)
+    let letterBoxSize = vec2(16,4)
+    ez.letterBoxCamera(letterBoxPos, letterBoxSize, true)
+
+    function resizeCanvasToDisplaySize() {
+      const rect = topCanvas.getBoundingClientRect();
+      const logicalWidth = Math.max(1, Math.round(rect.width));
+      const logicalHeight = Math.max(1, Math.round(rect.height));
+      let resized = false;
+
+      if (topCanvas.width !== logicalWidth) {
+        topCanvas.width = logicalWidth;
+        resized = true;
+      }
+      if (topCanvas.height !== logicalHeight) {
+        topCanvas.height = logicalHeight;
+        resized = true;
+      }
+
+      if (resized) {
+        ez.letterBoxCamera(letterBoxPos, letterBoxSize, true);
+      }
+    }
+
+    resizeCanvasToDisplaySize();
+    window.addEventListener('resize', resizeCanvasToDisplaySize);
+    if (window.ResizeObserver) {
+      const canvasResizeObserver = new ResizeObserver(resizeCanvasToDisplaySize);
+      canvasResizeObserver.observe(topCanvas);
+    }
+
+    const world = new PhysWorld();
+    const objA = new PhysObject(0, 1 + 2, 1);
+    const objB = new PhysObject(0, -1 + 2, 1);
+    world.objects.push(objA);
+    world.objects.push(objB);
+    let spring = new SpringConstraint(objA, objB, 2);
+    world.constraints.push(spring);
+    let pinnedLeft = null; // PinConstraint when in Stationary Impulse mode
+    // Triangle mode additions
+    let objC = null; // third particle for Triangle mode
+    let springAC = null; // spring between objA and objC
+    let springBC = null; // spring between objB and objC
+
+
+
+    // --- Plotly chart setup ---
+    const graphDiv = document.getElementById('bottom-graph');
+    let plotInitialized = false;
+    let plotAccumulator = 0; // throttle plot updates
+
+    function initPlot() {
+      if (plotInitialized) return;
+      const mode = (typeof controls !== 'undefined') ? currentMode() : "Vertical";
+      const yRange = (mode === "Stationary Pull") ? [-3.05, 3.05]
+        : (mode === "Stationary Impulse" ? [-2.05, 2.05]
+        : ((mode === "Triangle" || mode === "Triangle + Damping") ? [-3.05, 3.05] : [0, 2.05]));
+      const isStationary = (mode === "Stationary Pull" || mode === "Stationary Impulse");
+      const isTriangleMode = (mode === "Triangle" || mode === "Triangle + Damping");
+      const data = isStationary
+        ? [ { name: 'Particle X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } } ]
+        : (isTriangleMode
+          ? [
+              { name: 'Particle 2 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } },
+              { name: 'Particle 1 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#ff7f0e', width: 2 } },
+              { name: 'Particle 3 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#2ca02c', width: 2 } }
+            ]
+          : [
+              { name: 'Particle 2 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } },
+              { name: 'Particle 1 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#ff7f0e', width: 2 } }
+            ]
+        );
+      const layout = {
+        margin: { l: 50, r: 20, t: 20, b: 45 },
+        xaxis: { title: 'Time (s)', range: [0, 12], fixedrange: true },
+        yaxis: { title: 'X Velocity', range: yRange, fixedrange: true },
+        showlegend: true
+      };
+      Plotly.newPlot(graphDiv, data, layout, { responsive: true });
+      plotInitialized = true;
+    }
+
+    function resetPlot() {
+      if (!plotInitialized) return initPlot();
+      const mode = currentMode(); 
+      const yRange = (mode === "Stationary Pull") ? [-3, 3]
+        : (mode === "Stationary Impulse" ? [-2.05, 2.05]
+        : ((mode === "Triangle" || mode === "Triangle + Damping") ? [-3.05, 3.05] : [0, 2.05]));
+      const isStationary = (mode === "Stationary Pull" || mode === "Stationary Impulse");
+      const isTriangleMode = (mode === "Triangle" || mode === "Triangle + Damping");
+      const data = isStationary
+        ? [ { name: 'Particle X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } } ]
+        : (isTriangleMode
+          ? [
+              { name: 'Particle 2 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } },
+              { name: 'Particle 1 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#ff7f0e', width: 2 } },
+              { name: 'Particle 3 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#2ca02c', width: 2 } }
+            ]
+          : [
+              { name: 'Particle 2 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#1f77b4', width: 2 } },
+              { name: 'Particle 1 X Velocity', x: [], y: [], mode: 'lines', line: { color: '#ff7f0e', width: 2 } }
+            ]
+        );
+      const layout = {
+        margin: { l: 50, r: 20, t: 20, b: 45 },
+        xaxis: { title: 'Time (s)', range: [0, 12], fixedrange: true },
+        yaxis: { title: 'X Velocity', range: yRange, fixedrange: true },
+        showlegend: true
+      };
+      Plotly.react(graphDiv, data, layout, { responsive: true });
+    }
+
+    function resetBarbells() {
+      // Clear any pin constraint
+      if (pinnedLeft) {
+        const idx = world.constraints.indexOf(pinnedLeft);
+        if (idx >= 0) world.constraints.splice(idx, 1);
+        pinnedLeft = null;
+      }
+
+      // Remove Triangle-specific constraints/objects if present
+      if (springAC) {
+        const idx = world.constraints.indexOf(springAC);
+        if (idx >= 0) world.constraints.splice(idx, 1);
+        springAC = null;
+      }
+      if (springBC) {
+        const idx = world.constraints.indexOf(springBC);
+        if (idx >= 0) world.constraints.splice(idx, 1);
+        springBC = null;
+      }
+      if (objC) {
+        const idxObj = world.objects.indexOf(objC);
+        if (idxObj >= 0) world.objects.splice(idxObj, 1);
+      }
+
+      // Default: Vertical (current configuration)
+      const mode = currentMode(); // value set by ez.gui
+      if (mode === "Stationary Impulse") {
+        // Make the system as ideal as possible for horizontal demos
+        world.gravity = new Vec2(0, 0);
+        spring.damping = 0;
+        spring.stiffness = 8; // significantly less stiff than vertical
+        // Use standard 1s force application duration (for timing/arrow only)
+        forceApplicationDuration = 1.0;
+        forceA = 2.0 / forceApplicationDuration;
+        // Horizontal bar with left particle pinned at (-1, 2), right at (+1, 2)
+        // Right particle should be the one we push: assign to objA
+        objA.position = new Vec2(1, 2); // right
+        objB.position = new Vec2(-1, 2); // left (pinned)
+        objA.velocity = new Vec2(0, 0);
+        objB.velocity = new Vec2(0, 0);
+        objA.force = new Vec2(0, 0);
+        objB.force = new Vec2(0, 0);
+        spring.restLength = 2;
+        // Pin left particle (objB)
+        pinnedLeft = new PinConstraint(objB, objB.position);
+        world.constraints.push(pinnedLeft);
+      } else if (mode === "Stationary Pull") {
+        // Ideal horizontal with left pinned; right particle will be kinematically dragged 4 units during force phase
+        world.gravity = new Vec2(0, 0);
+        spring.damping = 0;
+        spring.stiffness = 8;
+        forceApplicationDuration = 1.0;
+        forceA = 2.0 / forceApplicationDuration;
+        objA.position = new Vec2(1, 2); // right
+        objB.position = new Vec2(-1, 2); // left (pinned)
+        objA.velocity = new Vec2(0, 0);
+        objB.velocity = new Vec2(0, 0);
+        objA.force = new Vec2(0, 0);
+        objB.force = new Vec2(0, 0);
+        spring.restLength = 2;
+        pinnedLeft = new PinConstraint(objB, objB.position);
+        world.constraints.push(pinnedLeft);
+      } else if (mode === "Horizontal") {
+        // Make the system as ideal as possible for horizontal demos
+        world.gravity = new Vec2(0, 0);
+        spring.damping = 0;
+        spring.stiffness = 8; // significantly less stiff than vertical
+        // Use standard 1s force application duration (for timing/arrow only)
+        forceApplicationDuration = 1.0;
+        forceA = 2.0 / forceApplicationDuration;
+        // Horizontal bar free: left (-1,2), right (+1,2)
+        // Right particle should be objA
+        objA.position = new Vec2(1, 2); // right
+        objB.position = new Vec2(-1, 2); // left
+        objA.velocity = new Vec2(0, 0);
+        objB.velocity = new Vec2(0, 0);
+        objA.force = new Vec2(0, 0);
+        objB.force = new Vec2(0, 0);
+        spring.restLength = 2;
+      } else if (mode === "Triangle" || mode === "Triangle + Damping") {
+        // Vertical-like setup but with an additional particle to form an equilateral triangle
+        // Base vertical segment length s = 2 (between objA and objB), third vertex to the right at (sqrt(3), 2)
+        // Adjust geometry so each vertex is exactly distance 1 from centroid and triangle points up.
+        // For equilateral: R (centroid->vertex) = s / sqrt(3). Set R = 1 => s = sqrt(3).
+        const s = Math.sqrt(3);
+        const R = 1;
+        const cmX = 0, cmY = 2;
+        const top = new Vec2(cmX, cmY + R); // (0, 3)
+        const left = new Vec2(cmX - (Math.sqrt(3) * 0.5) * R, cmY - 0.5 * R);  // (-sqrt(3)/2, 1.5)
+        const right = new Vec2(cmX + (Math.sqrt(3) * 0.5) * R, cmY - 0.5 * R); // ( sqrt(3)/2, 1.5)
+
+        world.gravity = new Vec2(0, -9.81);
+        spring.damping = (mode === "Triangle + Damping") ? 5 : 0;
+        spring.stiffness = 50; // same as vertical
+        forceApplicationDuration = 1.0;
+        forceA = 2.0 / forceApplicationDuration;
+
+        // Place vertices so triangle points up with blue (objA) on top
+        objA.position = top;
+        objB.position = left;
+        objA.velocity = new Vec2(0, 0);
+        objB.velocity = new Vec2(0, 0);
+        objA.force = new Vec2(0, 0);
+        objB.force = new Vec2(0, 0);
+        spring.restLength = s; // AB edge length (s = sqrt(3))
+
+        // Create or reset third particle
+        if (!objC) {
+          objC = new PhysObject(right.x, right.y, 1);
+        }
+        objC.position = right;
+        objC.velocity = new Vec2(0, 0);
+        objC.force = new Vec2(0, 0);
+        world.objects.push(objC);
+
+        // Create triangle springs for AB, AC and BC with length s
+        springAC = new SpringConstraint(objA, objC, s, spring.stiffness, spring.damping);
+        springBC = new SpringConstraint(objB, objC, s, spring.stiffness, spring.damping);
+        world.constraints.push(springAC);
+        world.constraints.push(springBC);
+      } else {
+        // Vertical demo uses normal gravity and higher damping to reduce oscillation on the graph
+        world.gravity = new Vec2(0, -9.81);
+        spring.damping = 5;
+        spring.stiffness = 50; // default stiffness for vertical
+        // Use standard 1s force application duration (for timing/arrow only)
+        forceApplicationDuration = 1.0;
+        forceA = 2.0 / forceApplicationDuration;
+        // Vertical (current) bar: top (0, 3), bottom (0, 1)
+        objA.position = new Vec2(0, 3);
+        objB.position = new Vec2(0, 1);
+        objA.velocity = new Vec2(0, 0);
+        objB.velocity = new Vec2(0, 0);
+        objA.force = new Vec2(0, 0);
+        objB.force = new Vec2(0, 0);
+        spring.restLength = 2;
+      }
+    }
+
+    function drawPhysWorld(world) {
+      // Color particles to match Plotly traces: Particle 2 (objB) = #1F77B4, Particle 1 (objA) = #FF7F0E
+      ez.ctx.lineWidth = 1.5;
+      drawSpring(objA.position, objB.position);
+
+      
+      // Triangle modes extra edges and third particle
+      if (typeof controls !== 'undefined' && (currentMode() === "Triangle" || currentMode() === "Triangle + Damping") && objC) {
+        drawSpring(objA.position, objC.position);
+        drawSpring(objB.position, objC.position);
+        ez.circle(objC.position, 0.1).fillAndStroke("#2CA02C", "black", 1.5);
+      }
+
+      ez.circle(objA.position, 0.1).fillAndStroke("#1F77B4", "black", 1.5);
+      ez.circle(objB.position, 0.1).fillAndStroke("#FF7F0E", "black", 1.5);
+      // Draw the spring specifically between our two particles
+    }
+
+    function drawSpring(posA, posB) {
+      const delta = posB.sub(posA);
+      const length = delta.length();
+      const direction = delta.normalized();
+      const perpendicular = direction.rotate90CCW();
+
+      const numCoils = 10;
+      const amplitude = 0.15;
+      const flatEndLength = 0.2; // Length of flat ends
+
+      // Calculate positions for flat ends and coiled middle section
+      const flatEndA = posA.add(direction.scale(flatEndLength));
+      const flatEndB = posB.sub(direction.scale(flatEndLength));
+      const coilLength = length - 2 * flatEndLength;
+
+      const points = [];
+
+      // Start with connection point A
+      points.push(posA);
+
+      // Add flat end at A
+      points.push(flatEndA);
+
+      // Add zigzag coils in the middle section
+      for (let i = 1; i < numCoils; i++) {
+        const t = i / numCoils;
+        const basePos = flatEndA.add(direction.scale(t * coilLength));
+        const offset = perpendicular.scale(amplitude * (i % 2 === 0 ? 1 : -1));
+        points.push(basePos.add(offset));
+      }
+
+      // Add flat end at B
+      points.push(flatEndB);
+
+      // End with connection point B
+      points.push(posB);
+
+      // Draw lines connecting all points
+      for (let i = 0; i < points.length - 1; i++) {
+        ez.line(points[i], points[i + 1]).stroke("black");
+      }
+    }
+
+    // Fixed timestep settings
+    const FIXED_DT = 1 / 240;          // Physics step = 240 Hz
+    const MAX_SUBSTEPS = 4;           // Clamp work per animation frame
+    let accumulator = 0;               // Un-simulated real-time
+
+    let timePassed = 0;                // Simulation time (not real wall-clock)
+    let sleepPhase = true;
+    let forceApplicationPhase = false;
+    let forceStartTime = 0;
+
+    // Configurable durations
+    const sleepDuration = 1.0; // seconds - adjust this value as needed
+    let forceApplicationDuration = 1.0; // seconds - can vary by mode
+
+    // Calculate forces needed to deliver same energy as original impulses
+    // To get same impulse over time: Force = Impulse / Duration
+    let forceA = 2.0 / forceApplicationDuration; // 2 N for 1 second = 2 N⋅s impulse
+    const triangleDampingForce = 3.0; // Apply 3 N for 1s to objA ⇒ CM reaches 1 m/s (M=3)
+    const forceCD = 1.0 / forceApplicationDuration; // 1 N for 1 second = 1 N⋅s impulse
+
+    // --- GUI controls ---
+    const controls = {
+      "Mode": [
+        "Stationary Pull",
+        "Stationary Impulse",
+        "Horizontal",
+        "Vertical",
+        "Triangle",
+        "Triangle + Damping",
+      ],
+      "Show rigid bodies [R]": false,
+      "_hints": {
+        "Show rigid bodies [R]": {
+          "hidden": true
+        }
+      }
+    };
+    function currentMode() {
+      const value = controls["Mode"];
+      return Array.isArray(value) ? (value[0] || "Vertical") : value;
+    }
+    let showRigidBodies = false;
+    let transitionStartTime = null;
+    let transitionDuration = 200; // ms
+    let transitionFromState = false;
+    let transitionToState = false;
+
+    ez.gui(controls, {
+      "Show rigid bodies [R]": val => {
+        // Start new transition
+        let currentTime = performance.now();
+
+        // If we're currently transitioning, use the current target as the new starting point
+        let currentVisualState = showRigidBodies;
+        if (transitionStartTime !== null) {
+          let elapsed = currentTime - transitionStartTime;
+          let progress = Math.min(elapsed / transitionDuration, 1);
+          if (progress >= 1) {
+            // Transition was complete, use final state
+            currentVisualState = transitionToState;
+            showRigidBodies = transitionToState; // Update the actual state
+          } else {
+            // Mid-transition: the "from" state becomes our current target state
+            currentVisualState = transitionToState;
+          }
+        }
+
+        transitionStartTime = currentTime;
+        transitionFromState = currentVisualState;
+        transitionToState = val;
+      },
+      "Mode": val => {
+        // When mode changes, restart the demo immediately
+        resetBarbells();
+        timePassed = 0;
+        sleepPhase = true;
+        forceApplicationPhase = false;
+        forceStartTime = 0;
+        resetPlot();
+      }
+    }, {
+      theme: 'minimalist',
+      darkMode: (() => {
+        // Get theme from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const theme = urlParams.get('theme');
+        return theme !== 'light';
+      })(),
+      hideControlsButton: true
+    });
+
+    // Initialize according to default Mode selection at load
+    resetBarbells();
+    resetPlot();
+
+    // Main animation function
+    function update(dt) {
+      initPlot();
+      ez.clear()
+
+      ez.save()
+      ez.ctx.lineWidth = "10"
+      //ez.rect(letterBoxPos, letterBoxSize.scaled(0.95)).stroke()
+      ez.restore()
+
+      dt = Math.min(dt, 0.1);
+
+      // Accumulate real time and run the physics in fixed-size steps
+      accumulator += dt;
+      let substeps = 0;
+
+      while (accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
+        const curMode = currentMode(); // cache mode per substep
+        // 12-second demo cycle reset
+        if (timePassed >= 12) {
+          resetBarbells();
+          timePassed = 0;
+          sleepPhase = true;
+          forceApplicationPhase = false;
+          forceStartTime = 0;
+          resetPlot();
+        }
+
+        // Phase transitions (sleep → force application → done)
+        if (sleepPhase && timePassed >= sleepDuration) {
+          sleepPhase = false;
+          forceApplicationPhase = true;
+          forceStartTime = timePassed;
+        }
+        if (forceApplicationPhase && (timePassed - forceStartTime) >= forceApplicationDuration) {
+          forceApplicationPhase = false;
+          if (curMode === "Stationary Pull") {
+            // Let go without setting an impulse; the drag has already displaced it
+          } else if (curMode === "Triangle + Damping") {
+            // No impulse; we already applied a real force over time to reach ~1 m/s CM
+          } else {
+            // Instantly set the right/top particle (objA) vx: 4 m/s for Triangle modes, else 2 m/s
+            const impulseVx = ((curMode === "Triangle") || (curMode === "Triangle + Damping")) ? 3 : 2;
+            objA.velocity = new Vec2(impulseVx, objA.velocity.y);
+          }
+        }
+
+        // External forces / kinematic control during force phase
+        if (forceApplicationPhase && curMode === "Stationary Pull") {
+          // Kinematically drag objA to the right so its end-of-phase position is 4 units farther
+          const t = Math.max(0, Math.min(1, (timePassed - forceStartTime) / forceApplicationDuration));
+          const startPos = new Vec2(1, 2);
+          const targetPos = new Vec2(2, 2); // 1 units to the right
+          const newPos = new Vec2(
+            startPos.x + (targetPos.x - startPos.x) * t,
+            startPos.y
+          );
+          // Set position directly; zero velocity to avoid integrating motion during drag
+          objA.position = newPos;
+          objA.velocity = new Vec2(0, 0);
+        } else if (forceApplicationPhase && curMode === "Triangle + Damping") {
+          // Apply a constant external force to objA for the duration to achieve ~1 m/s CM speed
+          // Net external force ≈ 3 N on total mass 3 ⇒ a_cm≈1 m/s^2 for 1s → v_cm≈1 m/s
+          // Slightly reduce to account for spring work/rotation coupling so CM ends near 1.00 m/s
+          objA.addForce(new Vec2(triangleDampingForce, 0));
+        }
+
+        // Step physics world at fixed dt
+        world.step(FIXED_DT);
+
+        accumulator -= FIXED_DT;
+        timePassed += FIXED_DT;
+        substeps++;
+      }
+
+      // Draw grid for reference
+      ez.ctx.lineWidth = 1
+      ez.grid(1, 50).stroke(0xbbbbbb)
+
+      // Draw coordinate axes
+      ez.ctx.lineWidth = 1.5
+      //ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey")
+
+      // --- Handle transition animation ---
+      let currentTime = performance.now();
+      let transitionProgress = 0;
+      let isTransitioning = false;
+
+      if (transitionStartTime !== null) {
+        let elapsed = currentTime - transitionStartTime;
+        transitionProgress = Math.min(elapsed / transitionDuration, 1);
+        isTransitioning = transitionProgress < 1;
+
+        if (!isTransitioning) {
+          // Transition complete
+          showRigidBodies = transitionToState;
+          transitionStartTime = null;
+        }
+      }
+
+      // --- Draw physics world or rigid body overlays with transition ---
+      if (isTransitioning) {
+        // During transition, render both with alpha blending
+        let fromAlpha, toAlpha;
+        if (transitionFromState) {
+          // Transitioning from boxes to particles
+          fromAlpha = 1 - transitionProgress;
+          toAlpha = transitionProgress;
+        } else {
+          // Transitioning from particles to boxes
+          fromAlpha = transitionProgress;
+          toAlpha = 1 - transitionProgress;
+        }
+
+        // Draw particles with alpha
+        ez.ctx.save();
+        ez.ctx.globalAlpha = toAlpha;
+        drawPhysWorld(world);
+        ez.ctx.restore();
+
+        // Draw boxes with alpha
+        ez.ctx.save();
+        ez.ctx.globalAlpha = fromAlpha;
+        drawBarbellBoxShadow(objA, objB);
+        drawBarbellBox(objA, objB);
+        ez.ctx.restore();
+
+      } else if (showRigidBodies) {
+        // Show only boxes
+        drawBarbellBoxShadow(objA, objB);
+        drawBarbellBox(objA, objB);
+      } else {
+        // Show only particles
+        drawPhysWorld(world);
+      }
+
+      // Highlight pinned/static particle in Stationary modes
+      if (currentMode() === "Stationary Impulse" || currentMode() === "Stationary Pull") {
+        const pinnedPos = objB.position; // left particle is pinned in this mode
+        ez.circle(pinnedPos, 0.12).fillAndStroke("white", "black", 2);
+        ez.circle(pinnedPos, 0.04).fill("black");
+      }
+
+      {
+        // Calculate kinetic energy and kinematics for display
+        // Two-particle barbell (existing formula)
+        const energyA = 0.5 * objA.mass * objA.velocity.length() * objA.velocity.length();
+        const energyB = 0.5 * objB.mass * objB.velocity.length() * objB.velocity.length();
+        const energyBarbell2 = energyA + energyB;
+        const cmVel2 = objA.velocity.add(objB.velocity).scale(0.5);
+        const speed2 = cmVel2.length();
+        const rVec2 = objA.position.sub(objB.position).scale(0.5);
+        const vRel2 = objA.velocity.sub(objB.velocity).scale(0.5);
+        let angVel2 = rVec2.length() > 1e-6 ? rVec2.cross(vRel2) / (rVec2.length() * rVec2.length()) : 0;
+
+        // Triangle (three-particle) system
+        const curMode = currentMode();
+        const isTriangleMode = (curMode === "Triangle" || curMode === "Triangle + Damping");
+        let energy3 = 0, speed3 = 0, angVel3 = 0;
+        if (isTriangleMode && objC) {
+          const energyC = 0.5 * objC.mass * objC.velocity.length() * objC.velocity.length();
+          energy3 = energyBarbell2 + energyC;
+
+          // Add spring potential energies: 0.5 * k * (|x| - L)^2 for AB, AC, BC if present
+          const lenAB = objA.position.sub(objB.position).length();
+          const peAB = 0.5 * spring.stiffness * Math.pow(lenAB - spring.restLength, 2);
+          let peAC = 0, peBC = 0;
+          if (springAC) {
+            const lenAC = objA.position.sub(objC.position).length();
+            peAC = 0.5 * springAC.stiffness * Math.pow(lenAC - springAC.restLength, 2);
+          }
+          if (springBC) {
+            const lenBC = objB.position.sub(objC.position).length();
+            peBC = 0.5 * springBC.stiffness * Math.pow(lenBC - springBC.restLength, 2);
+          }
+          energy3 += peAB + peAC + peBC;
+          // Center of mass velocity and angular velocity (least-squares about CM)
+          const cmVel3Vec = objA.velocity.add(objB.velocity).add(objC.velocity).scale(1 / 3);
+          speed3 = cmVel3Vec.length();
+          const cmPos3 = objA.position.add(objB.position).add(objC.position).scale(1 / 3);
+          const rA = objA.position.sub(cmPos3);
+          const rB = objB.position.sub(cmPos3);
+          const rC = objC.position.sub(cmPos3);
+          const vArel = objA.velocity.sub(cmVel3Vec);
+          const vBrel = objB.velocity.sub(cmVel3Vec);
+          const vCrel = objC.velocity.sub(cmVel3Vec);
+          const numerator = rA.cross(vArel) + rB.cross(vBrel) + rC.cross(vCrel);
+          const denom = rA.dot(rA) + rB.dot(rB) + rC.dot(rC);
+          angVel3 = denom > 1e-6 ? numerator / denom : 0;
+        }
+
+        // Display energy, linear velocity and angular velocity values
+        const textOptions = {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 18,
+          textAlign: "center",
+          textBaseline: "middle",
+          fontStyle: "500"  // Semi-bold
+        };
+
+        // Maintain cheat only for the two-particle barbell visualization
+        if (!isTriangleMode && Math.abs(angVel2 - -1.0) < 0.05) angVel2 = -1;
+        // Apply same rounding cheat for Triangle + Damping visualization
+        if (curMode === "Triangle + Damping" && Math.abs(angVel3 - -1.0) < 0.05) angVel3 = -1;
+
+        // Angular momentum about the center of mass
+        // Two-particle: L = sum r_i x m v_i_rel = 2 * (rVec2 x vRel2) for m=1
+        const angMom2 = 2 * rVec2.cross(vRel2);
+        // Triangle: L = sum r_i x m v_i_rel; with m=1 this equals the previously computed numerator
+        let angMom3 = 0;
+        if (isTriangleMode && objC) {
+          const cmVel3Vec_tmp = objA.velocity.add(objB.velocity).add(objC.velocity).scale(1 / 3);
+          const cmPos3_tmp = objA.position.add(objB.position).add(objC.position).scale(1 / 3);
+          const rA_tmp = objA.position.sub(cmPos3_tmp);
+          const rB_tmp = objB.position.sub(cmPos3_tmp);
+          const rC_tmp = objC.position.sub(cmPos3_tmp);
+          const vArel_tmp = objA.velocity.sub(cmVel3Vec_tmp);
+          const vBrel_tmp = objB.velocity.sub(cmVel3Vec_tmp);
+          const vCrel_tmp = objC.velocity.sub(cmVel3Vec_tmp);
+          angMom3 = rA_tmp.cross(vArel_tmp) + rB_tmp.cross(vBrel_tmp) + rC_tmp.cross(vCrel_tmp);
+        }
+
+        if (curMode !== "Stationary Pull" && curMode !== "Stationary Impulse") {
+          if (isTriangleMode && objC) {
+            ez.text(`Triangle Energy: ${energy3.toFixed(1)} J\nLinear Vel: ${speed3.toFixed(2)} m/s, Angular Vel: ${angVel3.toFixed(2)} rad/s, Angular Momentum: ${angMom3.toFixed(2)} kg·m²/s`, vec2(5, 3.5), textOptions).fill("black");
+          } else if (curMode === "Vertical") {
+            ez.text(`Barbell Energy: ${energyBarbell2.toFixed(1)} J\nLinear Vel: ${speed2.toFixed(2)} m/s, Angular Vel: ${angVel2.toFixed(2)} rad/s, Angular Momentum: ${angMom2.toFixed(2)} kg·m²/s`, vec2(5, 3.5), textOptions).fill("black");
+          } else {
+            ez.text(`Barbell Energy: ${energyBarbell2.toFixed(1)} J\nLinear Vel: ${speed2.toFixed(2)} m/s, Angular Vel: ${angVel2.toFixed(2)} rad/s`, vec2(5, 3.5), textOptions).fill("black");
+          }
+        }
+
+        //ez.ctx.fillText("Each particle = 1kg", 5.0, 15.0);
+      }
+
+      // Push data to plot (throttle to ~60Hz max)
+      plotAccumulator += dt;
+      if (plotAccumulator >= 1 / 60) {
+        const xVal = timePassed; // demo time 0..12s
+        const mode = currentMode();
+        if (mode === "Stationary Pull" || mode === "Stationary Impulse") {
+          const y = objA.velocity.x; // show only the blue trace velocity (objA is blue)
+          Plotly.extendTraces(graphDiv, { x: [[xVal]], y: [[y]] }, [0], 1000);
+        } else if (mode === "Triangle" || mode === "Triangle + Damping") {
+          // Match initialization order: [Particle 2 (objB), Particle 1 (objA), Particle 3 (objC)]
+          const yB = objB.velocity.x;
+          const yA = objA.velocity.x;
+          const yC = objC ? objC.velocity.x : 0;
+          Plotly.extendTraces(
+            graphDiv,
+            { x: [[xVal], [xVal], [xVal]], y: [[yB], [yA], [yC]] },
+            [0, 1, 2],
+            1000
+          );
+        } else {
+          // Match initialization order for non-triangle multi-trace: [objB, objA]
+          const yB = objB.velocity.x;
+          const yA = objA.velocity.x;
+          Plotly.extendTraces(graphDiv, { x: [[xVal], [xVal]], y: [[yB], [yA]] }, [0, 1], 1000);
+        }
+        plotAccumulator = 0;
+      }
+
+      // Sleep phase - just wait
+      if (sleepPhase) {
+        if (timePassed > sleepDuration) {
+          sleepPhase = false;
+          forceApplicationPhase = true;
+          forceStartTime = timePassed;
+        }
+      }
+
+      if (forceApplicationPhase && (timePassed - forceStartTime) < forceApplicationDuration) {
+        // Animate a pushing indicator whose leading edge always touches the particle
+        const t = Math.max(0, Math.min(1, (timePassed - forceStartTime) / forceApplicationDuration));
+        const slideDistance = 1.0;   // slides in by 1 unit over the phase
+        const particleRadius = 0.1;  // must match the drawn particle radius
+        const arrowLength = 1.0;     // for non-pull modes
+
+        // Compute the contact tip position on the particle's left side
+        let tip;
+        const modeNow = currentMode();
+        if (modeNow === "Stationary Pull") {
+          // Kinematic pull path for objA: x from 1 to 2 at y=2
+          const pulledX = 1 + (2 - 1) * t;
+          tip = new Vec2(pulledX - particleRadius, 2);
+          // Draw the hand emoji centered at the tip
+          ez.textWorldScaled(
+            "👌" /* put a zero width space in this string as some odd hack cause ok emoji wasn't rendering without it ??? */,
+            tip, {
+            fontFamily: "serif",
+            fontSize: 8,
+            textAlign: "left",
+            textBaseline: "middle",
+            fontStyle: "500"
+          }).fill("black");
+          // If I delete this comment the OK hand symbol renders as gibberish on both brave and chrome WHAT THE FUCK:
+          // →
+          const abc = "→";
+          // Doesn't happen on firefox
+        } else {
+          // For Triangle + Damping, have the arrow track next to the pushed particle continuously.
+          // For other modes, keep the original sliding-in animation.
+          const endOffset = 0.2; // tip stops just before the particle at phase end
+          const finalEnd = objA.position.sub(new Vec2(endOffset, 0));
+          let curEnd, curStart;
+          if (modeNow === "Triangle + Damping") {
+            curEnd = finalEnd;
+            curStart = curEnd.sub(new Vec2(arrowLength, 0));
+          } else {
+            const initialEnd = finalEnd.sub(new Vec2(slideDistance, 0));
+            curEnd = new Vec2(initialEnd.x + (finalEnd.x - initialEnd.x) * t, finalEnd.y);
+            curStart = curEnd.sub(new Vec2(arrowLength, 0));
+          }
+          ez.arrow(curStart, curEnd, 15).fillAndStroke("#C9FFF7AA", "black");
+          const mid = new Vec2((curStart.x + curEnd.x) * 0.5, (curStart.y + curEnd.y) * 0.5);
+          const labelText = (modeNow === "Triangle + Damping") ? `Force of ${triangleDampingForce.toFixed(0)}` : (((modeNow === "Triangle") || (modeNow === "Triangle + Damping")) ? "Impulse of 3" : "Impulse of 2");
+          ez.text(labelText, mid.add(new Vec2(0, 0.25)), {
+            fontFamily: "'Source Sans Pro', sans-serif",
+            fontSize: 14,
+            textAlign: "center",
+            textBaseline: "middle",
+            fontStyle: "500"
+          }).fill("black");
+        }
+      }
+    }
+
+    // Draw a rectangle shadow for a barbell (two particles)
+    function drawBarbellBoxShadow(p1, p2) {
+      ez.ctx.save();
+      ez.ctx.shadowColor = ez.parseColor("rgba(0,0,0,0.55)");
+      ez.ctx.shadowBlur = 10;
+      ez.ctx.shadowOffsetX = 5;
+      ez.ctx.shadowOffsetY = 5;
+
+      const center = vec2(
+        (p1.position.x + p2.position.x) * 0.5,
+        (p1.position.y + p2.position.y) * 0.5
+      );
+      const delta = new Vec2(p2.position.x - p1.position.x, p2.position.y - p1.position.y);
+      const length = delta.length() + 0.2; // a bit longer than the spring
+      const angle = Math.atan2(delta.y, delta.x);
+      const thickness = 0.33; // slightly larger than particle diameter
+      ez.rect(center, [length, thickness], angle).fill("rgba(0,0,0,0.2)");
+
+      ez.ctx.restore();
+    }
+
+    // Draw a rectangle overlay for a barbell (two particles)
+    function drawBarbellBox(p1, p2) {
+      ez.ctx.lineWidth = 1;
+      const center = vec2(
+        (p1.position.x + p2.position.x) * 0.5,
+        (p1.position.y + p2.position.y) * 0.5
+      );
+      const delta = new Vec2(p2.position.x - p1.position.x, p2.position.y - p1.position.y);
+      const length = delta.length() + 0.2; // a bit longer than the spring
+      const angle = Math.atan2(delta.y, delta.x);
+      const thickness = 0.33; // slightly larger than particle diameter
+      ez.rect(center, [length, thickness], angle).fillAndStroke("#FFB3BAEE", "#2F3437");
+    }
+
+    // Start the animation
+    ez.callAnimate(update, true);
+  </script>
+</body>
+
+</html>

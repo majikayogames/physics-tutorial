@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Derivative/Integral Kinematic Box (WIP)</title>
+	<style>
+		html,
+		body {
+			margin: 0;
+			height: 100%;
+				background: #242424;
+		}
+
+		#wm-root {
+			position: relative;
+			width: 100vw;
+			height: 100vh;
+			overflow: hidden;
+		}
+
+		.graph-placeholder {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: #ddd;
+			font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+			font-weight: 600;
+			letter-spacing: 0.02em;
+			font-size: clamp(16px, 2.6vw, 32px);
+			user-select: none;
+		}
+
+		canvas {
+			display: block;
+		}
+	</style>
+	<!-- Core libs -->
+	<script src="../ezdraw.js"></script>
+	<script src="../../simple_phys.js"></script>
+	<script src="../simple_phys_ezdraw_renderer.js"></script>
+	<!-- Window manager + plugins -->
+	<script src="./window-manager.js"></script>
+	<script src="./window-manager-transitions.js"></script>
+	<script src="./window-manager-resize.js"></script>
+
+	<!-- D3 for graphing -->
+	<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+
+	<script>
+		// Basic two-pane setup: left = placeholder, right = physics sim
+		document.addEventListener('DOMContentLoaded', function () {
+			const root = document.createElement('div');
+			root.id = 'wm-root';
+			document.body.appendChild(root);
+
+			const transitions = createWindowManagerTransitionsPlugin({ duration: 1000, slideDirection: 'left' });
+			const resizePlugin = createWindowManagerResizePlugin();
+			const wm = createWindowManager(root, [transitions, resizePlugin]);
+
+			// Prevent an animated jump from no-padding to padded layout on first paint
+			wm.setTransitionDuration(0);
+
+			// Layout and aesthetics
+			wm.setPaddingX(24);
+			wm.setPaddingY(24);
+			wm.setWindow1BorderRadius(10);
+			wm.setWindow2BorderRadius(10);
+			wm.setWindow1DropShadow('0 10px 30px rgba(0,0,0,0.25)');
+			wm.setWindow2DropShadow('0 10px 30px rgba(0,0,0,0.25)');
+
+			// Re-enable transitions after initial layout has been applied
+			requestAnimationFrame(() => wm.setTransitionDuration(1000));
+
+			const left = wm.getWindowOneElement();
+			const right = wm.getWindowTwoElement();
+			left.style.background = '#2D2D2D';
+			right.style.background = '#ffffff';
+			// Ensure rounded corners are visible and content is clipped to the radius
+			left.style.overflow = 'hidden';
+			right.style.overflow = 'hidden';
+
+			// Left panel: D3 graph container (fills the panel)
+			let graph = null;
+			if (window.d3) {
+				graph = {
+					container: d3.select(left).append('div')
+						.style('position', 'absolute')
+						.style('inset', '0')
+						.style('overflow', 'hidden'),
+					margin: { top: 16, right: 32, bottom: 56, left: 64 },
+					width: 0,
+					height: 0,
+					svg: null,
+					g: null,
+					xScale: null,
+					yScale: null,
+					xAxisG: null,
+					yAxisG: null,
+					pathFull: null,
+					line: null,
+					xLabel: null,
+					yLabel: null,
+					initialized: false,
+					y0: null,
+					yBottom: null,
+					tMax: 2,
+					data: [],
+					n: 200,
+					dt: null,
+					// Mode/state for position/velocity/acceleration
+					selectedMode: 'Position',
+					mode: 'Position',
+					baseTimes: [],
+					seriesPosition: [],
+					seriesVelocity: [],
+					seriesAcceleration: [],
+					currentSeries: [],
+					// Transition state
+					tweenFrom: null,
+					tweenTo: null,
+					tweenStartMs: 0,
+					tweenDurationMs: 600,
+					yDomainFrom: null,
+					yDomainTo: null
+				};
+				graph.svg = graph.container.append('svg')
+					.attr('width', '100%')
+					.attr('height', '100%')
+					.style('display', 'block')
+					.style('background', '#2D2D2D');
+				// Inherit rounded corners from window
+				graph.container.style('border-radius', 'inherit');
+				graph.svg.style('border-radius', 'inherit');
+				graph.g = graph.svg.append('g');
+				graph.xAxisG = graph.g.append('g').attr('class', 'x-axis');
+				graph.yAxisG = graph.g.append('g').attr('class', 'y-axis');
+				graph.pathFull = graph.g.append('path')
+					.attr('fill', 'none')
+					.attr('stroke', '#1f77b4')
+					.attr('stroke-width', 2)
+					.attr('d', '');
+
+				// Axis labels
+				graph.xLabel = graph.g.append('text')
+					.attr('fill', '#e1d4c9')
+					.attr('text-anchor', 'middle')
+					.style('font', '16px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif')
+					.style('font-weight', '700')
+					.text('time (s)');
+				graph.yLabel = graph.g.append('text')
+					.attr('fill', '#e1d4c9')
+					.attr('text-anchor', 'middle')
+					.style('font', '16px system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif')
+					.style('font-weight', '700')
+					.text('y position');
+
+				graph.layoutGraph = function layoutGraph() {
+					const rect = left.getBoundingClientRect();
+					graph.width = Math.max(1, Math.round(rect.width)) - graph.margin.left - graph.margin.right;
+					graph.height = Math.max(1, Math.round(rect.height)) - graph.margin.top - graph.margin.bottom;
+					graph.g.attr('transform', `translate(${graph.margin.left},${graph.margin.top})`);
+					if (!graph.xScale) graph.xScale = d3.scaleLinear();
+					if (!graph.yScale) graph.yScale = d3.scaleLinear();
+					graph.xScale.range([0, graph.width]);
+					graph.yScale.range([graph.height, 0]);
+					graph.xAxisG.attr('transform', `translate(0,${graph.height})`);
+					graph.updateGraphAxesAndPath();
+
+					// Position axis labels
+					if (graph.xLabel) graph.xLabel
+						.attr('x', Math.max(0, graph.width / 2))
+						.attr('y', graph.height + 44);
+					if (graph.yLabel) graph.yLabel
+						.attr('transform', `rotate(-90)`)
+						.attr('x', -Math.max(0, graph.height / 2))
+						.attr('y', -40);
+				}
+
+				graph.computeKinematicData = function computeKinematicData() {
+					if (graph.y0 == null || graph.yBottom == null || graph.tMax == null) return;
+					const n = graph.n;
+					const dt = graph.tMax / (n - 1);
+					const g = 9.81;
+					graph.data = [];
+					graph.dt = dt;
+					graph.baseTimes = [];
+					graph.seriesPosition = [];
+					graph.seriesVelocity = [];
+					graph.seriesAcceleration = [];
+					for (let i = 0; i < n; i++) {
+						const t = i * dt;
+						const y = graph.y0 - 0.5 * g * t * t; // position (v0y = 0)
+						const v = -g * t; // velocity
+						const a = -g; // acceleration
+						graph.baseTimes.push(t);
+						graph.seriesPosition.push(y);
+						graph.seriesVelocity.push(v);
+						graph.seriesAcceleration.push(a);
+						graph.data.push({ t, y });
+					}
+				}
+
+				graph.applyDarkAxisStyles = function applyDarkAxisStyles() {
+					if (!graph.xAxisG || !graph.yAxisG) return;
+					graph.xAxisG.selectAll('text').style('fill', '#e1d4c9');
+					graph.yAxisG.selectAll('text').style('fill', '#e1d4c9');  
+					graph.xAxisG.selectAll('line').style('stroke', '#3a3a3a');
+					graph.yAxisG.selectAll('line').style('stroke', '#3a3a3a');
+					graph.xAxisG.selectAll('path').style('stroke', '#3a3a3a');
+					graph.yAxisG.selectAll('path').style('stroke', '#3a3a3a');
+				}
+
+				graph.updateGraphAxesAndPath = function updateGraphAxesAndPath() {
+					if (!graph.xScale || !graph.yScale) return;
+					if (graph.y0 != null && graph.yBottom != null) {
+						graph.xScale.domain([0, Math.max(1e-3, graph.tMax)]);
+						const xAxis = d3.axisBottom(graph.xScale).ticks(6).tickSizeOuter(0);
+						const yAxis = d3.axisLeft(graph.yScale).ticks(6).tickSizeOuter(0);
+						graph.xAxisG.call(xAxis);
+						graph.yAxisG.call(yAxis);
+						graph.applyDarkAxisStyles();
+						// Larger tick fonts
+						graph.xAxisG.style('font-size', '13px').style('font-family', 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif');
+						graph.yAxisG.style('font-size', '13px').style('font-family', 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif');
+						graph.line = d3.line()
+							.x(d => graph.xScale(d.t))
+							.y(d => graph.yScale(d.y));
+					}
+				}
+
+				// Mode helpers
+				graph.domainForMode = function domainForMode(mode) {
+					const g = 9.81;
+					if (mode === 'Velocity') {
+						return [-g * graph.tMax, 0];
+					}
+					if (mode === 'Acceleration') {
+						return [-g * 1.05, 0.0];
+					}
+					return [graph.yBottom, graph.y0];
+				}
+
+				graph.updateYLabelForMode = function updateYLabelForMode(mode) {
+					if (!graph.yLabel) return;
+					const txt = mode === 'Velocity' ? 'y velocity' : (mode === 'Acceleration' ? 'y acceleration' : 'y position');
+					graph.yLabel.text(txt);
+					graph.yLabel.style('font-weight', '700');
+				}
+
+				graph.seriesForMode = function seriesForMode(mode) {
+					if (mode === 'Velocity') return graph.seriesVelocity;
+					if (mode === 'Acceleration') return graph.seriesAcceleration;
+					return graph.seriesPosition;
+				}
+
+				graph.applyModeImmediate = function applyModeImmediate(mode) {
+					graph.mode = mode;
+					graph.currentSeries = graph.seriesForMode(mode).slice();
+					const dom = graph.domainForMode(mode);
+					graph.yScale.domain(dom);
+					graph.yAxisG.call(d3.axisLeft(graph.yScale).ticks(6).tickSizeOuter(0));
+					graph.applyDarkAxisStyles();
+					graph.yAxisG.style('font-size', '13px').style('font-family', 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif');
+					graph.updateYLabelForMode(mode);
+				}
+
+				graph.startModeTransition = function startModeTransition(toMode, nowMs) {
+					const from = graph.currentSeries && graph.currentSeries.length ? graph.currentSeries : graph.seriesForMode(graph.mode);
+					const to = graph.seriesForMode(toMode);
+					graph.tweenFrom = from.slice();
+					graph.tweenTo = to.slice();
+					graph.tweenStartMs = nowMs || performance.now();
+					graph.yDomainFrom = graph.yScale.domain().slice();
+					graph.yDomainTo = graph.domainForMode(toMode).slice();
+					graph.selectedMode = toMode;
+					graph.updateYLabelForMode(toMode);
+				}
+
+				const roLeft = new ResizeObserver(() => graph.layoutGraph());
+				roLeft.observe(left);
+			}
+
+			// Right panel: scoped canvas for ezdraw + physics
+			const canvas = document.createElement('canvas');
+			canvas.style.position = 'absolute';
+			canvas.style.inset = '0';
+			canvas.style.width = '100%';
+			canvas.style.height = '100%';
+			canvas.style.outline = 'none';
+			canvas.style.background = '#ffffff';
+			canvas.style.borderRadius = 'inherit';
+			canvas.setAttribute('tabindex', '0');
+			right.appendChild(canvas);
+
+			// Wire ezdraw to our canvas (no full-screen body attachment)
+			ez.canvas = canvas;
+			ez.addInputEventListeners(canvas);
+			ez.ctx = canvas.getContext('2d');
+			ez._applyCanvasScale(canvas, ez.ctx);
+			ez.centerOrigin = true;
+
+			// Resize handling: flag dirty and apply inside render loop to avoid flicker
+			let needsResize = true;
+			const ro = new ResizeObserver(() => { needsResize = true; });
+			ro.observe(right);
+			window.addEventListener('resize', () => { needsResize = true; });
+
+			// Physics world and simple behavior: a single box at top-left, then push left
+			let world = new PhysWorld();
+			world.gravity = new Vec2(0, -9.81);
+
+			function screenWorldBounds() {
+				const bl = ez.screenToWorld(vec2(0, canvas.height));
+				const br = ez.screenToWorld(vec2(canvas.width, canvas.height));
+				const tl = ez.screenToWorld(vec2(0, 0));
+				return { bl, br, tl };
+			}
+			let singleBox = null;
+			//let launchAt = performance.now() + 2000; // start after 2s
+			let launchAt = Infinity; // require manual start (spacebar)
+			let frozen = false;
+
+			// Auto-throw state (match unconstrained_motion burst behavior)
+			let throwBoxesEnabled = false;
+			let lastAutoThrow = Date.now();
+			let lastManualThrow = 0;
+			const manualThrowPause = 3500;
+			let burstMode = false;
+			let burstEndTime = 0;
+
+			// E shortcut will be handled by ezgui checkbox
+
+			// Restart helper to replay from the start
+			function restartSim() {
+				// Recreate world and reset state
+				world = new PhysWorld();
+				world.gravity = new Vec2(0, -9.81);
+				singleBox = null;
+				frozen = false;
+				// Start immediately on replay
+				launchAt = performance.now();
+				// Clear graph and reinit on next spawn
+				if (graph) {
+					graph.pathFull.attr('d', '');
+					graph.initialized = false;
+				}
+				// If auto-throw is enabled, reset timers
+				if (throwBoxesEnabled) {
+					lastAutoThrow = Date.now();
+					burstMode = false;
+				}
+			}
+
+			function autoThrowBox() {
+				// Compute screen bounds in world units
+				const bl = ez.screenToWorld(vec2(0, canvas.height));
+				const br = ez.screenToWorld(vec2(canvas.width, canvas.height));
+				const tl = ez.screenToWorld(vec2(0, 0));
+				const screenWidth = br.x - bl.x;
+				const screenHeight = tl.y - bl.y;
+
+				const fromLeft = Math.random() < 0.5;
+				const size = 0.25 + Math.random() * 0.35;
+				const startX = fromLeft ? bl.x - 1 + (Math.random() - 0.5) : br.x + 1 + (Math.random() - 0.5);
+				const startY = bl.y - 2 + Math.random() * 1.5;
+				const box = world.addBox(startX, startY, size, size);
+				box.collisionMask = 0;
+				box._isProjectile = true;
+
+				// Choose a target area across the screen
+				const targetX = fromLeft ? (bl.x + screenWidth * (0.4 + Math.random() * 0.5)) : (br.x - screenWidth * (0.4 + Math.random() * 0.5));
+				const targetY = bl.y + screenHeight * (0.25 + Math.random() * 0.45);
+
+				// Projectile timing/velocities to match unconstrained_motion
+				const gravity = 9.81;
+				const dx = targetX - startX;
+				const dy = targetY - startY;
+				const throwTime = Math.sqrt(2 * (dy + gravity * dx * dx / (2 * 100))) / Math.sqrt(gravity);
+				const timeVariation = 0.7 + Math.random() * 0.6; // 70-130%
+				const velXBase = dx / (throwTime * timeVariation);
+				const velYBase = dy / (throwTime * timeVariation) + gravity * throwTime * timeVariation / 2;
+				box.velocity = new Vec2(
+					velXBase * (0.8 + Math.random() * 0.4),
+					velYBase * (0.8 + Math.random() * 0.4)
+				);
+				box.angularVelocity = (Math.random() - 0.5) * 15;
+			}
+
+			// GUI: Mode selector + Play
+			const guiEl = ez.gui({
+				"Mode [D]": ["Position", "Velocity", "Acceleration"],
+				"Throw boxes [B]": false,
+				"Left panel visible [E]": wm.window1Visible,
+				"Play [Spacebar]": () => restartSim()
+			}, {
+				"Mode [D]": (val) => {
+					if (graph) {
+						graph.selectedMode = val;
+						if (graph.initialized) graph.startModeTransition(val, performance.now());
+					}
+				},
+				"Throw boxes [B]": (val) => {
+					throwBoxesEnabled = !!val;
+					if (throwBoxesEnabled) {
+						lastAutoThrow = Date.now();
+						burstMode = false;
+					}
+				},
+				"Left panel visible [E]": (val) => {
+					wm.setWindow1Visible(!!val);
+				}
+			}, {
+				theme: 'minimalist',
+				hideControlsButton: true
+			});
+
+			// Ensure GUI overlays above window manager without altering its layout
+			(function ensureGuiOnTop() {
+				function styleGuiRoot(el) {
+					if (!el || !el.style) return;
+					// Only elevate stacking; do not change position or size
+					el.style.zIndex = '9999';
+					// Clear any previously applied positional overrides
+					el.style.top = '';
+					el.style.left = '';
+					el.style.right = '';
+					el.style.bottom = '';
+					el.style.height = '';
+					el.style.maxHeight = '';
+				}
+				if (guiEl) styleGuiRoot(guiEl);
+				const q = document.querySelector('.ezgui, .ez-gui, .ez-controls, [data-ezgui-root]');
+				if (q) styleGuiRoot(q);
+			})();
+
+			// Render/update loop
+			let prev = performance.now();
+			let lastCssW = 0, lastCssH = 0, lastDpr = 0;
+			let cameraInitialized = false;
+
+			function frame(now) {
+				const dt = Math.max(0, (now - prev) / 1000);
+				prev = now;
+
+				// Apply any pending resize in-sync with drawing
+				const rect = right.getBoundingClientRect();
+				const dpr = window.devicePixelRatio || 1;
+				const cssW = Math.max(1, Math.round(rect.width));
+				const cssH = Math.max(1, Math.round(rect.height));
+				if (needsResize || cssW !== lastCssW || cssH !== lastCssH || dpr !== lastDpr) {
+					lastCssW = cssW; lastCssH = cssH; lastDpr = dpr;
+					if (canvas.width !== cssW || canvas.height !== cssH) {
+						canvas.width = cssW;
+						canvas.height = cssH;
+					}
+					ez._applyCanvasScale(canvas, ez.ctx);
+					needsResize = false;
+				}
+
+				// Initialize camera once (static view); do not change on future resizes
+				if (!cameraInitialized) {
+					ez.letterBoxCamera(vec2(0, 2.9), vec2(8.36, 4), true);
+					cameraInitialized = true;
+				}
+
+				// Spawn the single box once we have sizing/camera; keep it frozen until launch
+				if (!singleBox && cameraInitialized) {
+					const { tl } = screenWorldBounds();
+					const size = 0.35;
+					// Slightly inset from top-left
+					const startX = tl.x + size * 1.9;
+					const startY = tl.y - size * 1.9;
+					singleBox = world.addBox(startX, startY, size, size);
+					singleBox.collisionMask = 0;
+					// Hint a pastel blue color from PhysRenderer palette
+					singleBox._renderColorHint = "#B5B9FF";
+					// Freeze: zero motion and disable gravity until launch time
+					singleBox.velocity = new Vec2(0, 0);
+					singleBox.angularVelocity = 0;
+					world.gravity = new Vec2(0, 0);
+					frozen = true;
+
+					// Initialize graph domains based on kinematics (no physics reads)
+					if (graph) {
+						const { bl } = screenWorldBounds();
+						graph.y0 = startY;
+						graph.yBottom = bl.y;
+						const g = 9.81;
+						const dy = Math.max(0, graph.y0 - graph.yBottom);
+						graph.tMax = Math.sqrt(dy / (0.5 * g)) || 2;
+						graph.computeKinematicData();
+						graph.layoutGraph();
+						// Apply current selection immediately on first init
+						graph.applyModeImmediate(graph.selectedMode || 'Position');
+						graph.initialized = true;
+					}
+				}
+
+				ez.clear();
+				ez.ctx.lineWidth = 1;
+				ez.grid(1, 50).stroke('#bbbbbb');
+
+				PhysRenderer.render(world);
+
+				// Burst-mode spawning to match unconstrained_motion
+				if (throwBoxesEnabled) {
+					const nowMs = Date.now();
+					if (!burstMode && Math.random() < 0.02 && (nowMs - lastManualThrow > manualThrowPause)) {
+						burstMode = true;
+						burstEndTime = nowMs + 500 + Math.random() * 1000; // 0.5 - 1.5s
+					}
+					if (burstMode && (nowMs > burstEndTime || nowMs - lastManualThrow < manualThrowPause)) {
+						burstMode = false;
+						lastAutoThrow = nowMs + 500 + Math.random() * 1000; // pause after burst
+					}
+					if (burstMode) {
+						if (nowMs - lastAutoThrow > 50 + Math.random() * 100) { // 0.05 - 0.15s
+							autoThrowBox();
+							lastAutoThrow = nowMs;
+						}
+					} else {
+						if (nowMs - lastAutoThrow > 500 + Math.random() * 1500) { // 0.5 - 2s
+							autoThrowBox();
+							lastAutoThrow = nowMs;
+						}
+					}
+				}
+
+				// After delay, unfreeze and launch: enable gravity, set rightward velocity and spin
+				if (singleBox && frozen && now >= launchAt) {
+					singleBox.velocity = new Vec2(5.5, 0);
+					singleBox.angularVelocity = -3.0;
+					world.gravity = new Vec2(0, -9.81);
+					frozen = false;
+				}
+
+				// Progressively reveal the path over time and smoothly morph between modes
+				if (graph && graph.initialized && graph.line) {
+					const tSinceLaunch = (now - launchAt) / 1000;
+					const tVisible = Math.max(0, Math.min(graph.tMax, tSinceLaunch));
+					if (!graph.dt || tVisible <= 0) {
+						graph.pathFull.attr('d', '');
+					} else {
+						// Determine current series with optional tween
+						let series = graph.currentSeries;
+						if (graph.tweenFrom && graph.tweenTo) {
+							const alpha = Math.max(0, Math.min(1, (now - graph.tweenStartMs) / graph.tweenDurationMs));
+							const blended = [];
+							for (let i = 0; i < graph.tweenFrom.length; i++) {
+								const a = graph.tweenFrom[i];
+								const b = graph.tweenTo[i];
+								blended.push(a + (b - a) * alpha);
+							}
+							series = blended;
+							// Blend y-domain as well for smooth axis scaling
+							if (graph.yDomainFrom && graph.yDomainTo) {
+								const d0 = graph.yDomainFrom[0] + (graph.yDomainTo[0] - graph.yDomainFrom[0]) * alpha;
+								const d1 = graph.yDomainFrom[1] + (graph.yDomainTo[1] - graph.yDomainFrom[1]) * alpha;
+								graph.yScale.domain([d0, d1]);
+								graph.yAxisG.call(d3.axisLeft(graph.yScale).ticks(6).tickSizeOuter(0));
+								graph.applyDarkAxisStyles();
+								graph.yAxisG.style('font-size', '13px').style('font-family', 'system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif');
+							}
+							if (alpha >= 1) {
+								graph.currentSeries = graph.tweenTo.slice();
+								graph.tweenFrom = graph.tweenTo = null;
+								graph.yScale.domain(graph.yDomainTo);
+								graph.yAxisG.call(d3.axisLeft(graph.yScale).ticks(6).tickSizeOuter(0));
+								graph.applyDarkAxisStyles();
+							}
+						}
+						const idx = Math.min(graph.baseTimes.length - 1, Math.floor(tVisible / graph.dt));
+						const points = [];
+						for (let i = 0; i <= idx; i++) {
+							points.push({ t: graph.baseTimes[i], y: series[i] });
+						}
+						graph.pathFull.attr('d', graph.line(points));
+					}
+				}
+
+				world.step(dt);
+
+				// Remove off-screen projectiles (match unconstrained_motion bounds)
+				{
+					const bottomRight = ez.screenToWorld(vec2(canvas.width, canvas.height));
+					world.objects = world.objects.filter(obj => {
+						if (obj.isStatic) return true;
+						if (!obj._isProjectile) return true;
+						const margin = (obj._boxHints && obj._boxHints.width ? obj._boxHints.width : 0.5) * 4;
+						return !(
+							obj.position.y < bottomRight.y - margin ||
+							obj.position.x > bottomRight.x + margin
+						);
+					});
+				}
+
+				requestAnimationFrame(frame);
+			}
+			requestAnimationFrame(frame);
+		});
+	</script>
+</head>
+
+<body></body>
+
+</html>

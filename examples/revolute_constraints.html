@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Revolute Constraints Demo</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 1), vec2(11.5995, 5.55), true)
+
+        // Create physics world
+        let world = new PhysWorld()
+        world.gravity = new Vec2(0, -9.81) // Normal gravity
+
+        // Create a simple scene with connected boxes
+        function setupScene() {
+            // Add static anchor point at the top
+            const anchor = world.addBox(0, 4, 0.5, 0.5, 1, true)
+
+            // Add first pendulum segment
+            const box1 = world.addBox(0, 2.75, 0.3, 2)
+            box1.collisionMask = 0
+
+            let startDiff = box1.rotation - anchor.rotation
+            const allowedRange = Math.PI/2.5
+            // Connect to anchor with revolute joint, limit rotation to ±45 degrees
+            const rv_c = world.addRevoluteConstraint(anchor, box1, new Vec2(0, 3.75), -allowedRange/2 + startDiff, allowedRange/2 + startDiff, 0.03)
+            rv_c._limitsRotationRendererHint = Math.PI/2 - allowedRange/2
+
+            // Add second pendulum segment
+            const box2 = world.addBox(0, 0.75, 0.3, 2)
+            box2.collisionMask = 0
+            box2.applyImpulse(new Vec2(5, 0), box2.position)
+            // Connect to first box with revolute joint, limit rotation to ±30 degrees
+            world.addRevoluteConstraint(box1, box2, new Vec2(0, 1.75))
+
+            const base = world.addBox(-4, 0, 0.5, 4, 1, true)
+            const blade = world.addBox(-4, 2, 3, 0.25)
+            blade.collisionMask = 0
+
+            const motor = world.addRevoluteConstraint(base, blade, new Vec2(-4, 2))
+            motor.motorEnabled = true
+            motor.motorSpeed = -2
+            motor.motorMaxForce = 5
+
+
+            const base2 = world.addBox(4, 0, 0.5, 4, 1, true)
+            const blade2 = world.addBox(4, 2, 3, 0.25)
+            blade2.collisionMask = 0
+
+            const motor2 = world.addRevoluteConstraint(base2, blade2, new Vec2(4, 2))
+            motor2.motorEnabled = true
+            motor2.motorSpeed = 2
+            motor2.motorMaxForce = 5
+        }
+        
+        // Set up initial scene
+        setupScene()
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+            
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+            
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey")
+            ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey")
+            
+            // Render physics objects
+            PhysRenderer.render(world)
+            
+            // Update physics
+            world.step(dt)
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+
+        // Enable mouse interaction
+        PhysRenderer.initMouseControls(world)
+    </script>
+</body>
+</html> 

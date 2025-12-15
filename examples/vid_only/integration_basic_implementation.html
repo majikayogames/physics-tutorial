@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Minimal Physics Demo</title>
+</head>
+
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="integration_basic_minimal_phys.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup EZDraw
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+
+        // Camera setup (minimal)
+        const worldHeight = 16;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            const worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, 0), vec2(worldWidth, worldHeight), true);
+        }
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+
+        class CircleShape {
+            constructor(radius, offset = new Vec2(0, 0)) { this.radius = radius; this.offset = offset; }
+            containsLocalPoint(point) { return point.sub(this.offset).length() <= this.radius; }
+        }
+
+        class ConvexPolygonShape {
+            constructor(ccwVertices) { this.vertices = ccwVertices; }
+            containsLocalPoint(point) { return ConvexPolygonShape.isPointInsideConvexPolygon(point, this.vertices); }
+            static getNormals(verts) { return verts.map((v, i) => verts[(i + 1) % verts.length].sub(v).rotate90CW().normalized()); }
+            static isPointInsideConvexPolygon(point, verts, tolerance = 0) { // Uses dot product, projects along normal of edges to check if point is inside all
+                return ConvexPolygonShape.getNormals(verts).every((n, i) => n.dot(point.sub(verts[i])) < tolerance);
+            }
+        }
+
+        function addBox(x, y, w, h, density = 1, isStatic = false) {
+            const mass = isStatic ? Infinity : density * w * h;
+            const momentOfInertia = isStatic ? Infinity : (mass * (w * w + h * h)) / 12;
+
+            const hw = w / 2, hh = h / 2;
+            const boxShape = new ConvexPolygonShape([new Vec2(-hw, -hh), new Vec2(hw, -hh), new Vec2(hw, hh), new Vec2(-hw, hh)]);
+
+            const box = new PhysObject(x, y, [boxShape], isStatic, mass, momentOfInertia);
+            box._boxHints = { width: w, height: h };
+            world.objects.push(box);
+            return box;
+        }
+
+        // Physics Setup
+        window.world = new PhysWorld();
+        //world.gravity = new Vec2(0, 0); // Zero gravity
+
+        // One Box
+        // addBox(x, y, width, height, density, isStatic)
+        //let box = addBox(0, 0, 2, 2, 1, false);
+        //box.angularVelocity = -1;
+        
+        function hotReload() {
+            let box = addBox(0, 0, 2, 2, 1, false);
+            box.angularVelocity = -1;
+        }
+
+        // Animation Loop
+        function update(dt) {
+            ez.clear();
+            ez.gridSvg(1, Infinity); // Optional grid
+
+            PhysRenderer.render(world);
+            world.step(dt);
+        }
+
+        PhysRenderer.initMouseControls(world);
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>

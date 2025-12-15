@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<title>Half-Pipe Constraint Visualization</title>
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+	<script src="ezdraw.js"></script>
+	<script>
+		// Canvas setup
+		const canvas = ez.createCanvasAndAddToPage();
+		ez.centerOrigin = true;
+		ez.letterBoxCamera(vec2(0, 0.75), vec2(10, 6), true);
+
+		// GUI controls
+		const guiControls = {
+			"Follow mouse [C]": false
+		};
+		ez.gui(guiControls, {}, {
+			theme: 'minimalist',
+			darkMode: (() => {
+				const urlParams = new URLSearchParams(window.location.search);
+				const theme = urlParams.get('theme');
+				return theme !== 'light';
+			})(),
+			hideControlsButton: true,
+			hideControls: true
+		});
+
+		// Half-pipe geometry (y-up, bowl opening upward)
+		const pipe = {
+			radius: 1.6,
+			flatLength: 3.5,
+			baseY: -1.25, // bottom flat y
+			wallHeight: 2.0,
+			get leftCenter() { return vec2(-this.flatLength / 2, this.baseY + this.radius); },
+			get rightCenter() { return vec2(this.flatLength / 2, this.baseY + this.radius); },
+			get sArc() { return this.radius * Math.PI * 0.5; },
+			get sLine() { return this.flatLength; },
+			get sTotal() { return this.sLine + 2 * this.sArc; }
+		};
+
+		function clamp01(x) { return Math.max(0, Math.min(1, x)); }
+		function lerp(a, b, t) { return a + (b - a) * t; }
+		function easeInOutCubic(t) {
+			t = clamp01(t);
+			return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+		}
+
+		// Path sampling along arc-length s ∈ [0, sTotal] (y-up)
+		function samplePathAtS(s) {
+			// Wrap s into range
+			const total = pipe.sTotal;
+			s = ((s % total) + total) % total;
+
+			const r = pipe.radius;
+			const sArc = pipe.sArc;
+			const sLine = pipe.sLine;
+
+			let pos, t; // position and unit tangent
+			if (s < sArc) {
+				// Left quarter-arc: θ ∈ [-π, -π/2]
+				const theta = -Math.PI + (s / r);
+				const c = pipe.leftCenter;
+				pos = vec2(c.x + r * Math.cos(theta), c.y + r * Math.sin(theta));
+				t = vec2(-Math.sin(theta), Math.cos(theta));
+			} else if (s < sArc + sLine) {
+				// Flat middle
+				const u = s - sArc;
+				pos = vec2(-pipe.flatLength / 2 + u, pipe.baseY);
+				t = vec2(1, 0);
+			} else {
+				// Right quarter-arc: θ ∈ [-π/2, 0]
+				const u = s - (sArc + sLine);
+				const theta = -Math.PI * 0.5 + (u / r);
+				const c = pipe.rightCenter;
+				pos = vec2(c.x + r * Math.cos(theta), c.y + r * Math.sin(theta));
+				t = vec2(-Math.sin(theta), Math.cos(theta));
+			}
+
+
+
+			// Normalize tangent (safety)
+			const len = Math.hypot(t.x, t.y) || 1;
+			t = vec2(t.x / len, t.y / len);
+
+			return { pos, t };
+		}
+
+		// Project a world point to the closest point on the skater's track
+		// (left arc, bottom flat, right arc). Returns { s, pos }.
+		function projectToTrack(p) {
+			const r = pipe.radius;
+			const cL = pipe.leftCenter;
+			const cR = pipe.rightCenter;
+			const sArc = pipe.sArc;
+			const sLine = pipe.sLine;
+			const leftWallX = cL.x - r;
+			const rightWallX = cR.x + r;
+
+			// If above the arcs (in the vertical wall region), snap slightly down from the arc top on that side
+			if (p.y >= pipe.baseY + r) {
+				const sEps = 0.02;
+				if (p.x <= 0) {
+					const sTopLeft = sEps; // near left arc top (s=0)
+					return { s: sTopLeft, pos: samplePathAtS(sTopLeft).pos };
+				} else {
+					const sTopRight = pipe.sTotal - sEps; // near right arc top (wrap end)
+					return { s: sTopRight, pos: samplePathAtS(sTopRight).pos };
+				}
+			}
+
+			let best = { distance: Infinity, s: 0, pos: vec2(0, 0) };
+			function consider(dist, s, pos) {
+				if (dist < best.distance) best = { distance: dist, s, pos };
+			}
+
+			// Left arc candidate (θ ∈ [-π, -π/2])
+			let thetaL = Math.atan2(p.y - cL.y, p.x - cL.x);
+			if (thetaL > -Math.PI * 0.5) thetaL = -Math.PI * 0.5;
+			if (thetaL < -Math.PI) thetaL = -Math.PI;
+			const posL = vec2(cL.x + r * Math.cos(thetaL), cL.y + r * Math.sin(thetaL));
+			const distL = Math.hypot(p.x - posL.x, p.y - posL.y);
+			const sL = r * (thetaL + Math.PI); // since theta = -π + s/r
+			consider(distL, sL, posL);
+
+			// Bottom flat candidate (x ∈ [-flatLength/2, +flatLength/2], y = baseY)
+			let xB = Math.max(-pipe.flatLength / 2, Math.min(pipe.flatLength / 2, p.x));
+			const posB = vec2(xB, pipe.baseY);
+			const distB = Math.hypot(p.x - posB.x, p.y - posB.y);
+			const sB = sArc + (xB + pipe.flatLength / 2);
+			consider(distB, sB, posB);
+
+			// Right arc candidate (θ ∈ [-π/2, 0])
+			let thetaR = Math.atan2(p.y - cR.y, p.x - cR.x);
+			if (thetaR > 0) thetaR = 0;
+			if (thetaR < -Math.PI * 0.5) thetaR = -Math.PI * 0.5;
+			const posR = vec2(cR.x + r * Math.cos(thetaR), cR.y + r * Math.sin(thetaR));
+			const distR = Math.hypot(p.x - posR.x, p.y - posR.y);
+			const sR = sArc + sLine + r * (thetaR + Math.PI * 0.5); // since theta = -π/2 + u/r
+			consider(distR, sR, posR);
+
+			return { s: ((best.s % pipe.sTotal) + pipe.sTotal) % pipe.sTotal, pos: best.pos };
+		}
+
+		// Nearest point from a world point to the ramp surface (arcs + bottom flat + vertical walls)
+		function nearestOnCurvedArcs(p) {
+			const r = pipe.radius;
+			const cL = pipe.leftCenter;
+			const cR = pipe.rightCenter;
+			const leftWallX = cL.x - r;
+			const rightWallX = cR.x + r;
+			const topY = pipe.baseY + pipe.wallHeight;
+
+			let best = { distance: Infinity };
+			function consider(point, distance, which, nIn) {
+				if (distance < best.distance) best = { point, distance, which, nIn };
+			}
+
+			// Left arc: θ ∈ [-π, -π/2]
+			let thetaL = Math.atan2(p.y - cL.y, p.x - cL.x);
+			if (thetaL > -Math.PI * 0.5) thetaL = -Math.PI * 0.5;
+			if (thetaL < -Math.PI) thetaL = -Math.PI;
+			const qL = vec2(cL.x + r * Math.cos(thetaL), cL.y + r * Math.sin(thetaL));
+			const dL = Math.hypot(p.x - qL.x, p.y - qL.y);
+			let nInL = vec2(cL.x - qL.x, cL.y - qL.y);
+			{ const len = Math.hypot(nInL.x, nInL.y) || 1; nInL = vec2(nInL.x / len, nInL.y / len); }
+			consider(qL, dL, 'arcL', nInL);
+
+			// Right arc: θ ∈ [-π/2, 0]
+			let thetaR = Math.atan2(p.y - cR.y, p.x - cR.x);
+			if (thetaR > 0) thetaR = 0;
+			if (thetaR < -Math.PI * 0.5) thetaR = -Math.PI * 0.5;
+			const qR = vec2(cR.x + r * Math.cos(thetaR), cR.y + r * Math.sin(thetaR));
+			const dR = Math.hypot(p.x - qR.x, p.y - qR.y);
+			let nInR = vec2(cR.x - qR.x, cR.y - qR.y);
+			{ const len = Math.hypot(nInR.x, nInR.y) || 1; nInR = vec2(nInR.x / len, nInR.y / len); }
+			consider(qR, dR, 'arcR', nInR);
+
+			// Bottom flat: y = baseY, x ∈ [-flatLength/2, flatLength/2]
+			let xB = Math.max(-pipe.flatLength / 2, Math.min(pipe.flatLength / 2, p.x));
+			const qB = vec2(xB, pipe.baseY);
+			const dB = Math.hypot(p.x - qB.x, p.y - qB.y);
+			consider(qB, dB, 'flat', vec2(0, 1));
+
+			// Left vertical wall: x = leftWallX, y ∈ [baseY + r, topY]
+			let yLw = Math.max(pipe.baseY + r, Math.min(topY, p.y));
+			const qLw = vec2(leftWallX, yLw);
+			const dLw = Math.hypot(p.x - qLw.x, p.y - qLw.y);
+			consider(qLw, dLw, 'wallL', vec2(1, 0));
+
+			// Right vertical wall: x = rightWallX, y ∈ [baseY + r, topY]
+			let yRw = Math.max(pipe.baseY + r, Math.min(topY, p.y));
+			const qRw = vec2(rightWallX, yRw);
+			const dRw = Math.hypot(p.x - qRw.x, p.y - qRw.y);
+			consider(qRw, dRw, 'wallR', vec2(-1, 0));
+
+			return best;
+		}
+
+		// Build the filled half-pipe shape (with vertical walls above arcs)
+		function drawHalfPipe() {
+			const r = pipe.radius;
+			const topY = pipe.baseY + pipe.wallHeight;
+			const leftWallX = pipe.leftCenter.x - r;  // x at top of left arc
+			const rightWallX = pipe.rightCenter.x + r; // x at top of right arc
+
+			const pts = [];
+			// Add shape around bottom flat part
+			pts.push(vec2(rightWallX + 0.5, topY));
+			pts.push(vec2(rightWallX + 0.5, pipe.baseY - 0.5));
+			pts.push(vec2(leftWallX - 0.5, pipe.baseY - 0.5));
+			pts.push(vec2(leftWallX - 0.5, topY));
+			//pts.push(vec2(leftWallX-1, topY)); // close along the top
+			//pts.push(vec2(leftWallX-1, pipe.baseY - 0.5)); // close along the top
+
+			// Start at left wall top, go clockwise
+			pts.push(vec2(leftWallX, topY));
+			pts.push(vec2(leftWallX, pipe.baseY + r));
+
+			// Left arc
+			const arcSteps = 24;
+			for (let i = 0; i <= arcSteps; i++) {
+				const theta = -Math.PI + (i / arcSteps) * (Math.PI * 0.5);
+				pts.push(vec2(
+					pipe.leftCenter.x + r * Math.cos(theta),
+					pipe.leftCenter.y + r * Math.sin(theta)
+				));
+			}
+
+			// Bottom straight
+			pts.push(vec2(-pipe.flatLength / 2, pipe.baseY));
+			pts.push(vec2(pipe.flatLength / 2, pipe.baseY));
+
+			// Right arc
+			for (let i = 0; i <= arcSteps; i++) {
+				const theta = -Math.PI * 0.5 + (i / arcSteps) * (Math.PI * 0.5);
+				pts.push(vec2(
+					pipe.rightCenter.x + r * Math.cos(theta),
+					pipe.rightCenter.y + r * Math.sin(theta)
+				));
+			}
+
+			pts.push(vec2(rightWallX, pipe.baseY + r));
+			pts.push(vec2(rightWallX, topY));
+			//pts.push(vec2(leftWallX, topY)); // close along the top
+
+			const pipeShape = ez.path(pts, true, false);
+			pipeShape.fill("#b7eeb0");
+			pipeShape.stroke("#000", { lineWidth: 0.75 });
+		}
+
+		// Draw the skateboard and stick figure at a path position
+		function drawSkater(pos, t) {
+			const n = vec2(-t.y, t.x); // left-hand normal pointing into the pipe
+
+			// Board parameters
+			const wheelRadius = 0.06;
+			const wheelBase = 0.6;
+			const deckLength = 0.8;
+			const deckThickness = 0.04;
+
+			// Shift from contact point up to axles/deck
+			const axleOffset = wheelRadius;
+			const deckOffset = wheelRadius * 2 + deckThickness * 0.5; // Bottom of deck rests on top of wheels
+
+			const contact = pos;
+			const axleCenter = vec2(contact.x + n.x * axleOffset, contact.y + n.y * axleOffset);
+			const boardCenter = vec2(contact.x + n.x * deckOffset, contact.y + n.y * deckOffset);
+
+			// Wheel centers
+			const halfBase = wheelBase * 0.4;
+			const frontAxle = vec2(axleCenter.x + t.x * halfBase, axleCenter.y + t.y * halfBase);
+			const backAxle = vec2(axleCenter.x - t.x * halfBase, axleCenter.y - t.y * halfBase);
+
+			// Wheels
+			const frontWheel = ez.circle(frontAxle, wheelRadius);
+			frontWheel.fill("#ff8c1a");
+			frontWheel.stroke("#000", { lineWidth: 1 });
+			const backWheel = ez.circle(backAxle, wheelRadius);
+			backWheel.fill("#ff8c1a");
+			backWheel.stroke("#000", { lineWidth: 1 });
+
+			// Deck (simple oriented rectangle)
+			const halfLen = deckLength * 0.5;
+			const halfThk = deckThickness * 0.5;
+			const p1 = vec2(boardCenter.x + t.x * halfLen + n.x * halfThk, boardCenter.y + t.y * halfLen + n.y * halfThk);
+			const p2 = vec2(boardCenter.x - t.x * halfLen + n.x * halfThk, boardCenter.y - t.y * halfLen + n.y * halfThk);
+			const p3 = vec2(boardCenter.x - t.x * halfLen - n.x * halfThk, boardCenter.y - t.y * halfLen - n.y * halfThk);
+			const p4 = vec2(boardCenter.x + t.x * halfLen - n.x * halfThk, boardCenter.y + t.y * halfLen - n.y * halfThk);
+			const deck = ez.path([p1, p2, p3, p4, p1], true, false);
+			deck.fill("#444");
+			deck.stroke("#000", { lineWidth: 0.03 });
+
+			// Simple stick figure standing on board, aligned with normal
+			const stance = 0.18; // feet separation along tangent
+			const bodyHeight = 0.95;
+			const legHeight = bodyHeight * 0.4;
+			const torsoHeight = bodyHeight * 0.35;
+
+			// Feet positions
+			const leftFoot = vec2(boardCenter.x - t.x * stance, boardCenter.y - t.y * stance);
+			const rightFoot = vec2(boardCenter.x + t.x * stance, boardCenter.y + t.y * stance);
+
+			// Hip and shoulder
+			const hip = vec2(boardCenter.x + n.x * legHeight, boardCenter.y + n.y * legHeight);
+			const shoulder = vec2(hip.x + n.x * torsoHeight, hip.y + n.y * torsoHeight);
+
+			// Draw legs
+			ez.line(leftFoot, hip).stroke("#000", { lineWidth: 1 });
+			ez.line(rightFoot, hip).stroke("#000", { lineWidth: 1 });
+
+			// Draw torso
+			ez.line(hip, shoulder).stroke("#000", { lineWidth: 1 });
+
+			// Arms at sides (starting lower from shoulder area)
+			const armStart = vec2(shoulder.x - n.x * 0.1, shoulder.y - n.y * 0.05); // Start arms lower
+			const armLen = 0.35;
+			const armAngle = 0.15; // slight angle outward
+			const leftArm = vec2(armStart.x - t.x * armLen * 0.5 - n.x * armAngle, armStart.y - t.y * armLen * 0.5 - n.y * armAngle);
+			const rightArm = vec2(armStart.x + t.x * armLen * 0.5 - n.x * armAngle, armStart.y + t.y * armLen * 0.5 - n.y * armAngle);
+			ez.line(armStart, leftArm).stroke("#000", { lineWidth: 1 });
+			ez.line(armStart, rightArm).stroke("#000", { lineWidth: 1 });
+
+			// Head
+			const head = ez.circle(vec2(shoulder.x + n.x * 0.18, shoulder.y + n.y * 0.18), 0.18);
+			head.fill("#fff");
+			head.stroke("#000", { lineWidth: 1 });
+		}
+
+		// Title and constraint equations
+		function drawTitle() {
+
+			// Position constraint equation
+			ez.textWorldScaled("Position constraint of p to ramp surface: C(p) = 0", vec2(0, 3.2), {
+				fontFamily: "'Lora', serif",
+				fontSize: 3.0,
+				textAlign: 'center',
+				textBaseline: 'middle',
+				fontStyle: 'italic'
+			}).fill("#000");
+
+			// Velocity constraint equation
+			ez.textWorldScaled("Velocity constraint of p to ramp surface: C'(p) = 0", vec2(0, 2.7), {
+				fontFamily: "'Lora', serif",
+				fontSize: 3.0,
+				textAlign: 'center',
+				textBaseline: 'middle',
+				fontStyle: 'italic'
+			}).fill("#000");
+		}
+
+		// Energy-based motion (not physics engine; illustrative only)
+		const g = 6.0; // gravity constant for speed along track
+		let s = pipe.sArc + pipe.sLine * 0.5; // start at center of flat
+		const yMax = pipe.baseY + pipe.radius * 0.999; // turning height (just below the lip)
+		let direction = 1; // 1 forward, -1 backward along increasing s
+
+		function speedAtS(sVal) {
+			const sample = samplePathAtS(sVal);
+			const y = sample.pos.y;
+			const dh = Math.max(0, yMax - y);
+			return Math.sqrt(2 * g * dh);
+		}
+
+		let prevFollowMouse = false;
+		let transition = { active: false, t: 0, duration: 1.0, fromPos: null, toPos: null, fromC: 0, toC: 0, surfacePoint: null, skaterFrom: 1, skaterTo: 1, mode: null };
+		let skaterFade = { active: false, t: 0, duration: 1.0 };
+		function update(dt) {
+			ez.clear();
+			ez.grid(1, 50).stroke("#ddd");
+			drawHalfPipe();
+
+			const followMouse = guiControls["Follow mouse [C]"] === true;
+			canvas.style.cursor = followMouse ? 'none' : '';
+
+			// Detect toggling from normal -> follow; instant switch (no expand transition)
+			if (followMouse && !prevFollowMouse) {
+				transition = { active: false, t: 0, duration: 0.75, fromPos: null, toPos: null, fromC: 0, toC: 0, surfacePoint: null, skaterFrom: 0, skaterTo: 0, mode: null };
+				skaterFade = { active: false, t: 0, duration: 0.75 };
+			}
+
+			// Detect toggling from follow -> normal; if so, project and set s, and set up collapse transition to the track
+			if (!followMouse && prevFollowMouse) {
+				const p = ez.getMousePosWorld();
+				const proj = projectToTrack(p);
+				s = proj.s;
+				direction = 1;
+
+				const distToTrack = Math.hypot(p.x - proj.pos.x, p.y - proj.pos.y);
+				transition = {
+					active: true,
+					t: 0,
+					duration: 0.75,
+					fromPos: p,
+					toPos: proj.pos,
+					fromC: distToTrack,
+					toC: 0,
+					surfacePoint: proj.pos,
+					skaterFrom: 0,
+					skaterTo: 1,
+					mode: 'collapse'
+				};
+				skaterFade = { active: false, t: 0, duration: 0.75 };
+			}
+
+			// Progress transition(s), if any
+			if (transition.active) {
+				transition.t = Math.min(transition.t + dt, transition.duration);
+				if (transition.t >= transition.duration) transition.active = false;
+			}
+			if (skaterFade.active) {
+				skaterFade.t = Math.min(skaterFade.t + dt, skaterFade.duration);
+				if (skaterFade.t >= skaterFade.duration) skaterFade.active = false;
+			}
+
+				// Start the skater fade-in only after collapse fully completes and set s to final projected point
+				if (!followMouse && prevFollowMouse && !transition.active && transition.mode === 'collapse' && !skaterFade.active) {
+					// Lock s to the exact collapsed endpoint before fading in
+					const finalPos = transition.toPos || transition.surfacePoint;
+					if (finalPos) {
+						const projFinal = projectToTrack(finalPos);
+						s = projFinal.s;
+						// ensure direction forward
+						direction = 1;
+					}
+				skaterFade = { active: true, t: 0, duration: 0.75 };
+				}
+
+			if (followMouse) {
+				// Follow mouse mode: draw point p and distance to nearest curved surface
+				const pNow = ez.getMousePosWorld();
+				const nearestNow = nearestOnCurvedArcs(pNow);
+				let dotPos, surfacePoint, cVal;
+				if (transition.active) {
+					const a = clamp01(transition.t / transition.duration);
+					const e = easeInOutCubic(a);
+					dotPos = vec2(lerp(transition.fromPos.x, transition.toPos.x, e), lerp(transition.fromPos.y, transition.toPos.y, e));
+					surfacePoint = transition.surfacePoint;
+					cVal = lerp(transition.fromC, transition.toC, e);
+				} else {
+					dotPos = pNow;
+					surfacePoint = nearestNow.point;
+					cVal = nearestNow.distance;
+				}
+
+				// Dotted line from p to nearest point on curved surface
+				ez.ctx.setLineDash([7, 5]);
+				ez.line(dotPos, surfacePoint).stroke("#000", { lineWidth: 1.5 });
+				ez.ctx.setLineDash([]);
+
+				// 'C' label positioned using surface inward normal (consistent side)
+				{
+					const mid = vec2((dotPos.x + surfacePoint.x) * 0.5, (dotPos.y + surfacePoint.y) * 0.5);
+					const surfInfo = nearestOnCurvedArcs(surfacePoint);
+					let nIn = surfInfo.nIn || vec2(0, 1);
+					const delta = vec2(dotPos.x - surfacePoint.x, dotPos.y - surfacePoint.y);
+					const side = delta.x * nIn.x + delta.y * nIn.y >= 0 ? 1 : -1; // inside vs outside
+					const dir = side >= 0 ? vec2(-nIn.y, nIn.x) : vec2(-nIn.y, nIn.x); // CCW on interior, CW on exterior
+					const cOffset = 0.14;
+					// If expanding (we disabled expand transition), or steady, draw at full alpha
+					ez.save();
+						if (transition.active && transition.mode === 'collapse') {
+							// When collapsing, fade out twice as fast with easing
+							const base = (transition.fromC > 1e-6) ? (cVal / transition.fromC) : 0;
+							const easedBase = easeInOutCubic(base);
+							const fast = 2 * easedBase - 1; // 1 -> 0 over first half
+							ez.ctx.globalAlpha = Math.max(0, Math.min(1, fast));
+						}
+					ez.textWorldScaled("C", vec2(mid.x + dir.x * cOffset, mid.y + dir.y * cOffset), {
+						fontFamily: "'Lora', serif",
+						fontSize: 1.0,
+						textAlign: 'center',
+						textBaseline: 'middle',
+						fontStyle: 'italic'
+					}).fill("#000");
+					ez.restore();
+				}
+
+				// Draw point p and nearest surface point marker (match normal-mode dot size)
+				const pDot = ez.circle(dotPos, 0.04); pDot.fill("#000");
+				// Removed the extra orange marker per request
+
+				// Label 'p' above the mouse point in world Y-up
+				const pLabelOffset = 0.3;
+				ez.textWorldScaled("p", vec2(dotPos.x, dotPos.y + pLabelOffset), {
+					fontFamily: "'Lora', serif",
+					fontSize: 2.5,
+					textAlign: 'center',
+					textBaseline: 'middle',
+					fontStyle: 'italic'
+				}).fill("#000");
+
+				// Top text: C = distance to curved surface
+				ez.textWorldScaled(
+					`C = ${cVal.toFixed(2)}`,
+					vec2(0, 3.1),
+					{ fontFamily: "'Lora', serif", fontSize: 3.0, textAlign: 'center', textBaseline: 'middle', fontStyle: 'italic' }
+				).fill("#000");
+			} else {
+				// Normal mode: draw title only after collapse transition completes
+				if (!(transition.active && transition.mode === 'collapse')) {
+					drawTitle();
+				}
+
+				// Compute skater fade alpha; only fade in after collapse completes
+				let skaterAlpha = 1;
+				if (transition.active && transition.mode === 'expand') {
+					skaterAlpha = 0;
+				} else if (transition.active && transition.mode === 'collapse') {
+					// During collapse we keep skater hidden until overlay finishes
+					skaterAlpha = 0;
+				} else if (skaterFade.active) {
+					const e = easeInOutCubic(clamp01(skaterFade.t / skaterFade.duration));
+					skaterAlpha = e; // fade in after collapse completes
+				} else {
+					skaterAlpha = 1;
+				}
+
+				// Advance and draw skater only when not collapsing back to surface
+				if (!(transition.active && transition.mode === 'collapse')) {
+					// Advance along the path using simple energy picture
+					const v = speedAtS(s);
+					let trialS = s + direction * v * dt;
+					const trialPos = samplePathAtS(trialS).pos;
+					if (trialPos.y > yMax) {
+						// Reached turning point; reverse direction
+						direction *= -1;
+						trialS = s; // stay within limits this frame
+					}
+					s = ((trialS % pipe.sTotal) + pipe.sTotal) % pipe.sTotal;
+
+					// Draw the skater at current position
+					const sample = samplePathAtS(s);
+					ez.save();
+					ez.ctx.globalAlpha = skaterAlpha;
+					drawSkater(sample.pos, sample.t);
+
+					// Draw constraint point (black dot on the half-pipe surface)
+					const constraintDot = ez.circle(sample.pos, 0.04);
+					constraintDot.fill("#000");
+
+					// Add fancy letter p following the normal of the pipe (inward)
+					const n = vec2(-sample.t.y, sample.t.x); // normal pointing inward to pipe
+					const pOffset = 0.25; // distance from constraint point
+					ez.textWorldScaled("p", vec2(sample.pos.x - n.x * pOffset, sample.pos.y - n.y * pOffset), {
+						fontFamily: "'Lora', serif",
+						fontSize: 2.5,
+						textAlign: 'center',
+						textBaseline: 'middle',
+						fontStyle: 'italic'
+					}).fill("#000");
+					ez.restore();
+				}
+
+				// If collapsing from follow, overlay the transitioning dot/line/C until it finishes
+				if (transition.active && transition.mode === 'collapse') {
+					const a = clamp01(transition.t / transition.duration);
+					const e = easeInOutCubic(a);
+					const dotPos = vec2(lerp(transition.fromPos.x, transition.toPos.x, e), lerp(transition.fromPos.y, transition.toPos.y, e));
+					const surfacePoint = transition.surfacePoint;
+					const cVal = lerp(transition.fromC, transition.toC, e);
+					ez.ctx.setLineDash([7, 5]);
+					ez.line(dotPos, surfacePoint).stroke("#000", { lineWidth: 1.5 });
+					ez.ctx.setLineDash([]);
+					// 'C' label positioned using surface inward normal (collapse overlay)
+					{
+						const mid = vec2((dotPos.x + surfacePoint.x) * 0.5, (dotPos.y + surfacePoint.y) * 0.5);
+						const surfInfo = nearestOnCurvedArcs(surfacePoint);
+						let nIn = surfInfo.nIn || vec2(0, 1);
+						const delta = vec2(dotPos.x - surfacePoint.x, dotPos.y - surfacePoint.y);
+						const side = delta.x * nIn.x + delta.y * nIn.y >= 0 ? 1 : -1; // inside vs outside
+						const dir = side >= 0 ? vec2(-nIn.y, nIn.x) : vec2(nIn.y, -nIn.x); // CCW on interior, CW on exterior
+						const cOffset = 0.14;
+						// Fade out twice as fast during collapse (half the time), with easing
+							ez.save();
+							const base = (transition.fromC > 1e-6) ? (cVal / transition.fromC) : 0;
+							const easedBase = easeInOutCubic(base);
+							const fast = 2 * easedBase - 1; // 1 -> 0 over first half
+							ez.ctx.globalAlpha = Math.max(0, Math.min(1, fast));
+						ez.textWorldScaled("C", vec2(mid.x + dir.x * cOffset, mid.y + dir.y * cOffset), {
+							fontFamily: "'Lora', serif",
+							fontSize: 1.0,
+							textAlign: 'center',
+							textBaseline: 'middle',
+							fontStyle: 'italic'
+						}).fill("#000");
+						ez.restore();
+					}
+					const pDot = ez.circle(dotPos, 0.04); pDot.fill("#000");
+					const pLabelOffset = 0.3;
+					ez.textWorldScaled("p", vec2(dotPos.x, dotPos.y + pLabelOffset), {
+						fontFamily: "'Lora', serif",
+						fontSize: 2.5,
+						textAlign: 'center',
+						textBaseline: 'middle',
+						fontStyle: 'italic'
+					}).fill("#000");
+					ez.textWorldScaled(
+						`C = ${cVal.toFixed(2)}`,
+						vec2(0, 3.1),
+						{ fontFamily: "'Lora', serif", fontSize: 3.0, textAlign: 'center', textBaseline: 'middle', fontStyle: 'italic' }
+					).fill("#000");
+				}
+			}
+
+			prevFollowMouse = followMouse;
+		}
+
+		ez.callAnimate(update, true);
+	</script>
+</body>
+
+</html>

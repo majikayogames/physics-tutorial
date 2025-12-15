@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Force, Mass & Torque Explained</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="../../simple_phys.js"></script>
+    <script src="../simple_phys_ezdraw_renderer.js"></script>
+    <script src="../curtain_intro.js"></script>
+    <script>
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+
+        const worldHeight = 16;
+        const cameraCenterY = -0.8;
+        let worldWidth;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, cameraCenterY), vec2(worldWidth, worldHeight), true);
+        }
+
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+
+        const world = new PhysWorld();
+        world.gravity = new Vec2(0, -9.81);
+        PhysRenderer.colors.outline = '#000000';
+
+        const originalShadow = PhysRenderer.renderObjectShadow.bind(PhysRenderer);
+        PhysRenderer.renderObjectShadow = function(obj) {
+            if (obj._noShadow) return;
+            originalShadow(obj);
+        };
+
+        // Initial box in bottom left corner
+        const boxSize = 1.6;
+        const startX = -worldWidth / 2 + boxSize;
+        const startY = cameraCenterY - worldHeight / 2 + boxSize;
+        const mainBox = world.addBox(startX, startY, boxSize, boxSize, 1);
+        mainBox._renderColorHint = '#BAFFC9';
+
+        // Arrow charge variables
+        let charging = false;
+        let chargeTime = 0;
+        const chargeDuration = 1.5;
+        const arrowLocal = new Vec2(boxSize / 2, boxSize / 2); // top-right corner
+        let arrowDir = new Vec2(10, 6).normalized();
+        let released = false;
+        const releaseDelay = 1.0; // seconds to wait after full charge
+        let releaseTimer = 0;
+
+        // User-adjustable desired vertical velocity for the initial impulse
+        const desiredYVelocity = 16; // change this to any value you want
+
+        function computePlannedVelocity() {
+            const g = Math.abs(world.gravity.y);
+            const vy = desiredYVelocity;
+            if (g <= 0 || vy <= 0) return null; // requires upward launch and gravity
+            const tReturn = (2 * vy) / g; // time to return to same Y
+            const x0 = mainBox.position.x;
+            const xTarget = -x0; // symmetric about x = 0
+            const vx = (xTarget - x0) / tReturn;
+            return new Vec2(vx, vy);
+        }
+
+        // Trail mode after release
+        let trailMode = false;
+
+        // Spawning boxes after first box leaves screen
+        let spawning = false;
+        let spawnTimer = 0;
+        let spawnElapsed = 0;
+        const spawnStartDelay = 2.0; // extra delay before spawning begins
+        let spawnDelayTimer = 0;
+        const spawnInterval = 0.03;
+        const blackPhaseTime = 3; // seconds after spawning start to go all black
+        let globalBlackout = false; // once true, all future spawns are black
+
+        function spawnRandomBox(forceBlack = false) {
+            const size = 4;
+            const radius = Math.sqrt(worldWidth * worldWidth + worldHeight * worldHeight) / 2 + size;
+            const angle = Math.random() * Math.PI * 2;
+            const x = Math.cos(angle) * radius;
+            const y = cameraCenterY + Math.sin(angle) * radius;
+            const dir = new Vec2(-Math.cos(angle), -Math.sin(angle)).normalized();
+            const speed = Math.random() * 4 + 3;
+            const vx = dir.x * speed + (Math.random() - 0.5) * 2;
+            const vy = dir.y * speed + (Math.random() - 0.5) * 2;
+            const b = world.addBox(x, y, size, size, 1);
+            b.velocity = new Vec2(vx, vy);
+            b.angularVelocity = (Math.random() - 0.5) * 6;
+            const makeBlack = forceBlack || Math.random() < 0.3;
+            if (makeBlack) {
+                PhysRenderer._objectColors.set(b, '#000000');
+                b._renderTransparencyHint = 'FF';
+                b._noShadow = true;
+            }
+        }
+
+        function drawStatic() {
+            ez.ctx.lineWidth = 1;
+            ez.gridSvg(1, Infinity);
+            ez.ctx.lineWidth = 1.5;
+
+            ez.save();
+            ez.ctx.shadowColor = 'rgba(0,0,0,0.25)';
+            ez.ctx.shadowBlur = 4;
+            ez.ctx.shadowOffsetX = 0;
+            ez.ctx.shadowOffsetY = 0;
+            ez.textWorldScaled('Force, Mass & Torque\nExplained', vec2(0, cameraCenterY + 0.25), {
+                fontSize: 12.8,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontStyle: 'bold',
+                textAlign: 'center',
+                textBaseline: 'middle'
+            }).fill('#000000');
+            ez.textWorldScaled('Part of the physics engine tutorial series created by Majikayo Games', vec2(0, cameraCenterY - 1.75), {
+                fontSize: 3.2,
+                fontFamily: "'Source Sans Pro', sans-serif",
+                textAlign: 'center',
+                textBaseline: 'middle'
+            }).fill('#000000');
+            ez.restore();
+        }
+
+        function update(dt) {
+            if (!trailMode) {
+                ez.clear();
+                drawStatic();
+            }
+
+            if (released) {
+                world.step(dt);
+                cleanupBoxes();
+            }
+
+            PhysRenderer.render(world);
+
+            if (charging) {
+                chargeTime += dt;
+                const arrowStart = mainBox.position.add(arrowLocal);
+                const plannedVelocity = computePlannedVelocity();
+                if (plannedVelocity) {
+                    arrowDir = plannedVelocity.normalized();
+                }
+                const t = Math.min(chargeTime / chargeDuration, 1);
+                const arrowLength = t * 12;
+                const end = arrowStart.add(arrowDir.scale(arrowLength));
+
+                if (t >= 1 && !released) {
+                    releaseTimer += dt;
+                }
+                if (!released && chargeTime >= chargeDuration && releaseTimer >= releaseDelay) {
+                    released = true;
+                    charging = false;
+                    // Convert desired initial velocity to impulse (momentum): p = m * v
+                    const impulse = plannedVelocity ? plannedVelocity.scale(mainBox.mass) : arrowDir.scale(52);
+                    mainBox.applyImpulse(impulse, arrowStart);
+                    ez.clear();
+                    drawStatic();
+                    PhysRenderer.render(world);
+                    trailMode = true;
+                }
+
+                if (!released) {
+                    ez.save();
+                    ez.ctx.globalCompositeOperation = 'source-over';
+                    ez.arrow(vec2(arrowStart.x, arrowStart.y), vec2(end.x, end.y), 8).fill('black');
+                    ez.circle(vec2(arrowStart.x, arrowStart.y), 0.1).fill('black');
+                    ez.restore();
+                }
+            } else {
+                // Check if main box left screen to start spawning
+                if (!spawning) {
+                    const offX = Math.abs(mainBox.position.x) > worldWidth / 2 + boxSize / 2;
+                    const offY = mainBox.position.y < cameraCenterY - worldHeight / 2 - boxSize / 2;
+                    const offscreen = offX || offY;
+                    if (offscreen) {
+                        spawnDelayTimer += dt;
+                        if (spawnDelayTimer >= spawnStartDelay) {
+                            spawning = true;
+                            spawnDelayTimer = 0;
+                            spawnTimer = 0;
+                            spawnElapsed = 0;
+                        }
+                    } else {
+                        spawnDelayTimer = 0;
+                    }
+                } else {
+                    spawnTimer += dt;
+                    spawnElapsed += dt;
+                    if (spawnElapsed > blackPhaseTime) {
+                        globalBlackout = true;
+                    }
+                    if (spawnTimer >= spawnInterval) {
+                        spawnTimer = 0;
+                        const forceBlack = globalBlackout || (spawnElapsed > blackPhaseTime);
+                        spawnRandomBox(forceBlack);
+                    }
+                    if (spawnElapsed > blackPhaseTime + 2) {
+                        spawning = false;
+                    }
+                }
+            }
+        }
+
+        function cleanupBoxes() {
+            world.objects = world.objects.filter(obj => {
+                if (obj._boxHints) {
+                    const half = obj._boxHints.width / 2;
+                    const offLeft = obj.position.x + half < -worldWidth / 2 && obj.velocity.x <= 0;
+                    const offRight = obj.position.x - half > worldWidth / 2 && obj.velocity.x >= 0;
+                    const offTop = obj.position.y - half > cameraCenterY + worldHeight / 2 && obj.velocity.y >= 0;
+                    const offBottom = obj.position.y + half < cameraCenterY - worldHeight / 2 && obj.velocity.y <= 0;
+                    return !(offLeft || offRight || offTop || offBottom);
+                }
+                return true;
+            });
+        }
+
+        playCurtainIntro(canvas).then(() => {
+            charging = true;
+        });
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>

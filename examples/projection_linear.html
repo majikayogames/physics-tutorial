@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Linear Property of Vector Projection</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(10, 6), true)
+
+        // Main projection vector (normalized, at 32 degrees)
+        let projectionVector = vec2(Math.cos(32 * Math.PI / 180), Math.sin(32 * Math.PI / 180));
+        let dragging = false;
+
+        // Simple, clear vector sequences focused on visual clarity
+        const vectorSequences = [
+            [vec2(2.0, 0), vec2(0, -1), vec2(1.6, 0), vec2(0, 1.2), vec2(0.8, 0)],
+            [vec2(-2.2, 0), vec2(0, -0.5), vec2(-2.0, 0), vec2(0, 1), vec2(-1, 0)],
+            [vec2(0, 2), vec2(1, 0), vec2(1, 0), vec2(0, -2), vec2(2.5, 0)],
+            [vec2(-3, 0), vec2(0, 2.5), vec2(5, 0)],
+        ];
+
+        let currentSequenceIndex = 0;
+        let componentVectors = vectorSequences[currentSequenceIndex];
+
+        // Function to get next sequence
+        function getNextVectorSequence() {
+            currentSequenceIndex = (currentSequenceIndex + 1) % vectorSequences.length;
+            return vectorSequences[currentSequenceIndex];
+        }
+
+        // Animation state
+        let animationTime = 0;
+        let lastTime = 0;
+        let pauseDuration = 3; // seconds to pause at end
+
+        // Calculate total distance for constant speed animation
+        function getTotalDistance() {
+            return componentVectors.reduce((sum, vector) => sum + vector.length(), 0);
+        }
+
+        let totalDistance = getTotalDistance();
+        const animationSpeed = 0.7; // units per second
+
+        const data = {
+            "Show projections": true,
+            "Fade completed arrows": false,
+            _hints: {}
+        };
+
+        const dataCallbacks = {
+            "Fade completed arrows": (value) => {
+                // This will be used in the animation functions
+            }
+        };
+
+        // ez.gui(data, dataCallbacks, {
+        //     theme: 'minimalist',
+        //     darkMode: (() => {
+        //         const urlParams = new URLSearchParams(window.location.search);
+        //         const theme = urlParams.get('theme');
+        //         return theme !== 'light';
+        //     })(),
+        //     hideControlsButton: true
+        // });
+
+        ez.onMouseDown(() => {
+            let mousePos = ez.getMousePosWorld();
+            if (mousePos.sub(projectionVector).length() < 0.3) {
+                dragging = true;
+            }
+        });
+
+        ez.onMouseUp(() => {
+            dragging = false;
+        });
+
+        ez.onMouseDrag(() => {
+            if (dragging) {
+                let mousePos = ez.getMousePosWorld();
+                projectionVector = mousePos.normalized();
+            }
+        });
+
+        function formatNumber(num) {
+            return (num.toFixed(2) === "-0.00" ? "0.00" : num.toFixed(2));
+        }
+
+        function projectVector(vector, onto) {
+            let dotProduct = vector.dot(onto);
+            return onto.scaled(dotProduct / (onto.length() * onto.length()));
+        }
+
+        function getAnimationProgress() {
+            let currentDrawingDuration = totalDistance / animationSpeed;
+
+            if (animationTime >= currentDrawingDuration) {
+                // We've completed drawing for the current set of vectors or are in pause.
+                // Show as fully drawn.
+                return totalDistance;
+            } else {
+                // We are in the drawing phase for the current set of vectors.
+                return animationTime * animationSpeed;
+            }
+        }
+
+        function draw(time) {
+            const rawDelta = lastTime === 0 ? 0 : (time - lastTime) / 1000.0;
+            const deltaTime = Math.min(rawDelta, 1/30);
+            lastTime = time;
+
+            ez.clear();
+            drawGrid();
+            drawNumberLine(); // Draw number line behind everything
+            drawProjectionVector();
+
+            // These functions will use getAnimationProgress, which relies on current animationTime and totalDistance
+            drawComponentAnimation();
+            if (data["Show projections"]) {
+                drawProjections();
+            }
+
+            animationTime += deltaTime; // Advance animation using real time
+
+            let currentDrawingDuration = totalDistance / animationSpeed;
+            let currentFullCycleDuration = currentDrawingDuration + pauseDuration;
+
+            if (animationTime >= currentFullCycleDuration) {
+                // Completed a full cycle (draw + pause), reset for the next one.
+                animationTime = 0; // Reset time for the next cycle
+                componentVectors = getNextVectorSequence();
+                totalDistance = getTotalDistance(); // Update totalDistance for the new vectors
+            }
+
+            requestAnimationFrame(draw);
+        }
+
+        function drawGrid() {
+            ez.grid(vec2(1, 1), 50).stroke(0xcccccc);
+        }
+
+        function drawNumberLine() {
+            // Draw infinite line along projection vector direction
+            const lineLength = 10; // Extend line far in both directions
+            const startPoint = projectionVector.scaled(-lineLength);
+            const endPoint = projectionVector.scaled(lineLength);
+
+            ez.line(startPoint, endPoint)
+                .stroke("#B0B0B0", { lineWidth: 1, globalAlpha: 1 });
+
+            // Draw tick marks along the line
+            const tickSpacing = 1.0; // Distance between ticks
+            const tickLength = 0.1; // Length of each tick mark
+
+            // Get perpendicular vector for tick marks
+            const perpendicular = vec2(-projectionVector.y, projectionVector.x).scaled(tickLength);
+
+            // Draw ticks from negative to positive direction
+            for (let i = -Math.floor(lineLength / tickSpacing); i <= Math.floor(lineLength / tickSpacing); i++) {
+                const tickPosition = projectionVector.scaled(i * tickSpacing);
+                const tickStart = tickPosition.sub(perpendicular);
+                const tickEnd = tickPosition.add(perpendicular);
+
+                ez.line(tickStart, tickEnd)
+                    .stroke("#D0D0D0", { lineWidth: 1, globalAlpha: 1 });
+            }
+        }
+
+        function drawProjectionVector() {
+            // Draw the main projection vector at its actual normalized length
+            //ez.arrow(vec2(0, 0), projectionVector, 15)
+            //    .fill("#8A8FFF", { globalAlpha: 0.2 });
+        }
+
+        function drawComponentAnimation() {
+            let distanceTraveled = getAnimationProgress();
+            let allComponents = [...componentVectors];
+
+            // Calculate which vectors to show based on distance traveled
+            let currentDistance = 0;
+            let numVectorsToShow = 0;
+            let partialProgress = 0;
+
+            for (let i = 0; i < allComponents.length; i++) {
+                let vectorLength = allComponents[i].length();
+                if (currentDistance + vectorLength <= distanceTraveled) {
+                    currentDistance += vectorLength;
+                    numVectorsToShow++;
+                } else {
+                    // Partial vector
+                    partialProgress = (distanceTraveled - currentDistance) / vectorLength;
+                    break;
+                }
+            }
+
+            // Draw vectors tip-to-tail
+            let currentPos = vec2(0, 0);
+
+            for (let i = 0; i < numVectorsToShow; i++) {
+                let vector = allComponents[i];
+                let isXComponent = vector.y === 0; // X components have y=0
+                let color = isXComponent ? "#FF8A9B" : "#7FFFA0"; // More saturated pink for X, mint for Y
+                let currentOutlineColor = "#00000000"; // Default transparent outline for completed arrows
+
+                let alpha = 1.0; // Default to full opacity
+
+                if (data["Fade completed arrows"]) {
+                    // Calculate fade progress for completed arrows (fade over 0.5 seconds after completion)
+                    let vectorLength = vector.length();
+                    let vectorEndDistance = 0;
+                    for (let j = 0; j <= i; j++) {
+                        vectorEndDistance += allComponents[j].length();
+                    }
+                    let timeSinceCompletion = (distanceTraveled - vectorEndDistance) / animationSpeed;
+                    let fadeProgress = Math.min(timeSinceCompletion / 0.5, 1); // Fade over 0.5 seconds
+                    alpha = 1 - fadeProgress * 0.7; // Fade from 1.0 to 0.3
+                }
+
+                // If it's the last arrow of the sequence AND we are in the pause phase, give it the visible outline.
+                if (distanceTraveled >= totalDistance && i === allComponents.length - 1) {
+                    currentOutlineColor = isXComponent ? "#33333377" : "#33333377";
+                }
+
+                ez.arrow(currentPos, currentPos.add(vector), 15)
+                    .fillAndStroke(color, currentOutlineColor, { globalAlpha: alpha });
+
+                ez.circle(currentPos.add(vector), 0.045).fill("#808080", { globalAlpha: 0.9 });
+
+                currentPos = currentPos.add(vector);
+            }
+
+            // Draw partial vector if in middle of animation (keep this one fully opaque, fill only)
+            if (numVectorsToShow < allComponents.length && partialProgress > 0) {
+                let vector = allComponents[numVectorsToShow];
+                let isXComponent = vector.y === 0; // X components have y=0
+                let color = isXComponent ? "#FF8A9B" : "#7FFFA0"; // More saturated pink for X, mint for Y
+                let outlineColor = isXComponent ? "#33333377" : "#33333377"; // Visible outline for current arrow
+                let partialVector = vector.scaled(partialProgress);
+
+                // Draw subtle projection from start of current arrow with fade in/out
+                let currentArrowStart = currentPos;
+                let projectionOfStart = projectVector(currentArrowStart, projectionVector);
+
+                // Calculate fade in/out based on how long this vector has been drawing
+                let vectorLength = vector.length();
+                let vectorStartDistance = 0;
+                for (let j = 0; j < numVectorsToShow; j++) {
+                    vectorStartDistance += allComponents[j].length();
+                }
+                let timeDrawingThisVector = (distanceTraveled - vectorStartDistance) / animationSpeed;
+                let totalDrawingTime = vectorLength / animationSpeed;
+                let fadeInProgress = Math.min(timeDrawingThisVector / 0.2, 1); // Fade in over 0.2s
+
+                let fadeAlpha;
+                if (numVectorsToShow === allComponents.length - 1) {
+                    // If this is the LAST vector being drawn, only fade it IN, don't fade it out before pause.
+                    fadeAlpha = fadeInProgress * 0.4;
+                } else {
+                    let fadeOutProgress = Math.min((totalDrawingTime - timeDrawingThisVector) / 0.2, 1); // Fade out in last 0.2s
+                    fadeAlpha = Math.min(fadeInProgress, fadeOutProgress) * 0.4; // Max 40% opacity
+                }
+
+                ez.line(currentArrowStart, projectionOfStart, { lineDash: [2, 4] })
+                    .stroke("#606060", { lineWidth: 1, globalAlpha: fadeAlpha }); // Darker gray with fade
+
+                ez.arrow(currentPos, currentPos.add(partialVector), 15)
+                    .fillAndStroke(color, outlineColor, { globalAlpha: 1.0 });
+
+                ez.circle(currentPos.add(partialVector), 0.045).fill("#808080", { globalAlpha: 0.9 });
+
+                currentPos = currentPos.add(partialVector);
+
+            } else if (distanceTraveled >= totalDistance && allComponents.length > 0) {
+                // All vectors are drawn, and we are in the pause or just finished drawing them.
+                // We need to find the start of the *last* arrow that was drawn.
+                let lastArrowStartPos = vec2(0, 0);
+                for (let i = 0; i < allComponents.length - 1; i++) {
+                    lastArrowStartPos = lastArrowStartPos.add(allComponents[i]);
+                }
+
+                let projectionOfLastArrowStart = projectVector(lastArrowStartPos, projectionVector);
+                ez.line(lastArrowStartPos, projectionOfLastArrowStart, { lineDash: [2, 4] })
+                    .stroke("#606060", { lineWidth: 1, globalAlpha: 0.4 }); // Keep visible during pause
+            }
+
+            // Draw the final sum vector
+            if (distanceTraveled > 0) {
+                // currentPos here is the tip of the final sum vector
+                ez.arrow(vec2(0, 0), currentPos, 10)
+                    .fill("#FFD700", { globalAlpha: 1.0, lineDash: [5, 5] }); // Smaller head, full opacity
+            }
+        }
+
+        function drawProjections() {
+            let distanceTraveled = getAnimationProgress();
+            let allComponents = [...componentVectors];
+
+            // Calculate current sum based on distance traveled
+            let currentDistance = 0;
+            let currentSum = vec2(0, 0);
+
+            // Track which vectors are complete and which is partial
+            let numVectorsToShow = 0;
+            let partialProgress = 0;
+
+            for (let i = 0; i < allComponents.length; i++) {
+                let vector = allComponents[i];
+                let vectorLength = vector.length();
+
+                if (currentDistance + vectorLength <= distanceTraveled) {
+                    currentSum = currentSum.add(vector);
+                    currentDistance += vectorLength;
+                    numVectorsToShow++;
+                } else {
+                    // Partial vector
+                    partialProgress = (distanceTraveled - currentDistance) / vectorLength;
+                    currentSum = currentSum.add(vector.scaled(partialProgress));
+                    break;
+                }
+            }
+
+            // Draw individual projected vectors on the projection line
+            let projectionPos = vec2(0, 0);
+
+            for (let i = 0; i < numVectorsToShow; i++) {
+                let vector = allComponents[i];
+                let projectedVector = projectVector(vector, projectionVector);
+                let isXComponent = vector.y === 0;
+                let color = isXComponent ? "#FF8A9B" : "#7FFFA0";
+                let currentOutlineColor = "#00000000"; // Default transparent outline for completed projected arrows
+
+                let alpha = 1.0; // Default to full opacity
+
+                if (data["Fade completed arrows"]) {
+                    // Calculate fade for completed projected vectors
+                    let vectorLength = vector.length();
+                    let vectorEndDistance = 0;
+                    for (let j = 0; j <= i; j++) {
+                        vectorEndDistance += allComponents[j].length();
+                    }
+                    let timeSinceCompletion = (distanceTraveled - vectorEndDistance) / animationSpeed;
+                    let fadeProgress = Math.min(timeSinceCompletion / 0.5, 1);
+                    alpha = 1 - fadeProgress * 0.7; // Fade from 1.0 to 0.3
+                }
+
+                // If it's the last arrow of the sequence AND we are in the pause phase, give it the visible outline.
+                if (distanceTraveled >= totalDistance && i === allComponents.length - 1) {
+                    currentOutlineColor = isXComponent ? "#33333377" : "#33333377";
+                }
+
+                // Draw projected vector on the line
+                let arrowStart = projectionPos;
+                let arrowEnd = projectionPos.add(projectedVector);
+
+                ez.arrow(arrowStart, arrowEnd, 15)
+                    .fillAndStroke(color, currentOutlineColor, { globalAlpha: alpha });
+
+                // Draw small circle only at the end
+                ez.circle(arrowEnd, 0.045).fill("#808080", { globalAlpha: 0.9 * alpha });
+
+                if (i === 0) {
+                    ez.circle([0, 0], 0.045).fill("#808080", { globalAlpha: 0.9 * alpha });
+                }
+
+                projectionPos = arrowEnd;
+            }
+
+            // Draw partial projected vector if in middle of animation
+            if (numVectorsToShow < allComponents.length && partialProgress > 0) {
+                let vector = allComponents[numVectorsToShow];
+                let projectedVector = projectVector(vector.scaled(partialProgress), projectionVector);
+                let isXComponent = vector.y === 0;
+                let color = isXComponent ? "#FF8A9B" : "#7FFFA0";
+                let currentOutlineColor = isXComponent ? "#33333377" : "#33333377"; // Visible outline for current projected arrow
+
+                let arrowStart = projectionPos;
+                let arrowEnd = projectionPos.add(projectedVector);
+
+                ez.arrow(arrowStart, arrowEnd, 15)
+                    .fillAndStroke(color, currentOutlineColor, { globalAlpha: 1.0 });
+
+                // Draw small circle only at the end for the currently drawing arrow
+                ez.circle(arrowEnd, 0.045).fill("#808080", { globalAlpha: 0.9 });
+
+                if (numVectorsToShow === 0) {
+                    ez.circle([0, 0], 0.045).fill("#808080", { globalAlpha: 0.9 });
+                }
+
+                projectionPos = arrowEnd;
+            }
+
+            if (distanceTraveled > 0) {
+                // Project the current sum (main projection line)
+                let projection = projectVector(currentSum, projectionVector);
+                // Removed the solid projection line, keeping only the dotted connection
+                ez.line(currentSum, projection, { lineDash: [3, 3] })
+                    .stroke("#FFD700", { lineWidth: 2, globalAlpha: 0.75 }); // More transparent
+            }
+        }
+
+        draw(0);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Physics Test</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Get friction parameter from URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const useFriction = urlParams.get('friction') !== 'false';
+
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 1), vec2(11.5995, 5.55), true)
+
+        // Utility to create a star composed of convex triangles (CCW order)
+        function addStar(
+            world,
+            x, y,
+            points,
+            outerRadius,
+            innerRadius,
+            angleOffset = 0,
+            options = {}
+        ) {
+            if (points < 3) {
+                console.error("Cannot create a star with fewer than 3 points.");
+                return null;
+            }
+
+            const shapes = [];
+            const triangles = [];
+            const step = (Math.PI * 2) / points;
+
+            const outer = [];
+            const inner = [];
+
+            for (let k = 0; k < points; k++) {
+                const angleOuter = angleOffset + k * step;
+                const angleInner = angleOuter + step / 2;
+
+                outer.push(new Vec2(outerRadius * Math.cos(angleOuter), outerRadius * Math.sin(angleOuter)));
+                inner.push(new Vec2(innerRadius * Math.cos(angleInner), innerRadius * Math.sin(angleInner)));
+            }
+
+            for (let k = 0; k < points; k++) {
+                const O = outer[k];
+                const I = inner[k];
+                const Op = outer[(k + 1) % points];
+
+                // Add shapes for collision
+                shapes.push(new ConvexPolygonShape([new Vec2(0, 0), O, I]));
+                shapes.push(new ConvexPolygonShape([new Vec2(0, 0), I, Op]));
+
+                // Keep triangles for inertia calculation
+                triangles.push({ v1: O, v2: I });
+                triangles.push({ v1: I, v2: Op });
+            }
+
+            const isStatic = options.isStatic ?? false;
+            const mass = options.mass ?? 1;
+
+            // Compute total area of triangles
+            let totalArea = 0;
+            for (const tri of triangles) {
+                const x1 = tri.v1.x, y1 = tri.v1.y;
+                const x2 = tri.v2.x, y2 = tri.v2.y;
+                totalArea += Math.abs(x1 * y2 - x2 * y1) * 0.5;
+            }
+
+            const density = mass / totalArea;
+
+            // Compute moment of inertia about origin
+            let momentOfInertia = 0;
+            for (const tri of triangles) {
+                const x1 = tri.v1.x, y1 = tri.v1.y;
+                const x2 = tri.v2.x, y2 = tri.v2.y;
+                const areaTri = Math.abs(x1 * y2 - x2 * y1) * 0.5;
+                const mTri = density * areaTri;
+                const dot = x1 * x2 + y1 * y2;
+                const sum =
+                    (x1 * x1 + y1 * y1) +
+                    dot +
+                    (x2 * x2 + y2 * y2);
+                momentOfInertia += (mTri * sum) / 6;
+            }
+
+            const star = new PhysObject(x, y, shapes, isStatic, mass, momentOfInertia);
+            Object.assign(star, options);
+
+            world.objects.push(star);
+            return star;
+        }
+
+
+        // Create physics world
+        let world = new PhysWorld()
+
+        // Scene setup functions
+        function clearScene() {
+            world.objects = [];
+            world.constraints = [];
+        }
+
+        function setupBoxesScene() {
+            clearScene();
+            // Add ceiling
+            world.addBox(0, 8, 20, 1, 1, true)
+            // Add floor
+            world.addBox(0, -2, 20, 1, 1, true)
+            let box = world.addBox(0, 0, 1, 1)
+            let box2 = world.addBox(0, 1, 0.5, 0.5)
+            let box3 = world.addBox(0, 1.5, 0.25, 0.25)
+
+            if (!useFriction) {
+                world.objects.forEach(obj => {
+                    obj.friction = 0;
+                    obj.restitution = 0;
+                });
+            }
+        }
+
+        function setupDominoesScene() {
+            clearScene();
+            // Add floor
+            world.addBox(0, -2, 20, 1, 1, true);
+
+            // Create a line of dominoes
+            const dominoWidth = 0.15;   // Increased width for better stability
+            const dominoHeight = 2.0;  // Doubled height
+            const spacing = 0.8;       // Increased spacing for larger dominoes
+            const numDominoes = 10;
+
+            for (let i = 0; i < numDominoes; i++) {
+                const x = -3 + (i * spacing);
+                const domino = world.addBox(x, -1.5 + dominoHeight / 2, dominoWidth, dominoHeight);
+                // Add angular velocity to first domino to start chain reaction
+                if (i === 0) {
+                    domino.angularVelocity = -5;  // Negative value for clockwise rotation
+                }
+                domino.friction = 0.1;
+            }
+
+            if (!useFriction) {
+                world.objects.forEach(obj => {
+                    obj.friction = 0;
+                });
+            }
+        }
+
+        function setupStackScene() {
+            clearScene();
+            // Add floor
+            world.addBox(0, -2, 20, 1, 1, true);
+
+            // Create a three-level Stonehenge-like structure
+            const pillarWidth = 0.4;
+            const pillarHeight = 1.25;
+            const crossbeamWidth = 3.5;
+            const crossbeamHeight = 0.4;
+            const pillarSpacing = 2.0;
+
+            // Bottom level - 3 pillars
+            const bottomY = -1.5;
+            // Left pillar
+            world.addBox(-pillarSpacing, bottomY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Center pillar
+            world.addBox(0, bottomY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Right pillar
+            world.addBox(pillarSpacing, bottomY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Bottom crossbeam
+            world.addBox(0, bottomY + pillarHeight + crossbeamHeight / 2, crossbeamWidth * 1.2, crossbeamHeight);
+
+            // Middle level - 2 pillars
+            const middleY = bottomY + pillarHeight + crossbeamHeight;
+            // Left pillar
+            world.addBox(-pillarSpacing / 2, middleY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Right pillar
+            world.addBox(pillarSpacing / 2, middleY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Middle crossbeam
+            world.addBox(0, middleY + pillarHeight + crossbeamHeight / 2, crossbeamWidth * 0.8, crossbeamHeight);
+
+            // Top level - 1 pillar
+            const topY = middleY + pillarHeight + crossbeamHeight;
+            // Center pillar
+            world.addBox(0, topY + pillarHeight / 2, pillarWidth, pillarHeight);
+            // Top crossbeam
+            world.addBox(0, topY + pillarHeight + crossbeamHeight / 2, crossbeamWidth * 0.5, crossbeamHeight);
+
+            if (!useFriction) {
+                world.objects.forEach(obj => {
+                    obj.friction = 0;
+                    obj.restitution = 0;
+                });
+            }
+        }
+
+        function setupStarScene() {
+            clearScene();
+            // Add floor
+            world.addBox(0, -2, 20, 1, 1, true);
+
+            // Add a star using the addStar function
+            addStar(world, 0, 2, 5, 1.5, 0.7, 0, { restitution: 0.5, friction: 0.5 });
+            // Add another smaller star
+            addStar(world, 2, 4, 7, 0.8, 0.3, Math.PI / 7, { restitution: 0.7, friction: 0.3 });
+
+            // Add some circles
+            world.addCircle(-2, 3, 0.5, 1, false);
+            world.addCircle(1, 5, 0.7, 1, false);
+            world.addCircle(3, 1, 0.4, 1, false);
+
+            // Add a capsule - updated call
+            world.addCapsule(-1, 0, 2, 0.8, 0.3);
+
+            // Add another smaller capsule and remove its hints
+            let smallerCapsule = world.addCapsule(-1, 4, 0.45, 0.1, 0.2);
+            delete smallerCapsule._capsuleHints;
+
+            if (!useFriction) {
+                world.objects.forEach(obj => {
+                    obj.friction = 0;
+                    obj.restitution = 0;
+                });
+            }
+        }
+
+        function setupBouncyScene() {
+            clearScene();
+
+            // Create boxed in area with walls (fit letterbox: 11.6 x 5.55)
+            const wallThickness = 0.3;
+            const areaWidth = 10.5;  // Fit within 11.6 width
+            const areaHeight = 4.5;  // Fit within 5.55 height
+
+            // Center the area at letterbox center (y=1)
+            const yOffset = 1.0;
+
+            // Floor
+            world.addBox(0, yOffset + (-areaHeight / 2 - wallThickness / 2), areaWidth + wallThickness, wallThickness, 1, true);
+            // Ceiling  
+            world.addBox(0, yOffset + (areaHeight / 2 + wallThickness / 2), areaWidth + wallThickness, wallThickness, 1, true);
+            // Left wall
+            world.addBox(-areaWidth / 2 - wallThickness / 2, yOffset, wallThickness, areaHeight, 1, true);
+            // Right wall
+            world.addBox(areaWidth / 2 + wallThickness / 2, yOffset, wallThickness, areaHeight, 1, true);
+
+            // Add bouncy circles with restitution = 1
+            const numCircles = 8;
+            for (let i = 0; i < numCircles; i++) {
+                const x = (Math.random() - 0.5) * (areaWidth - 2); // Keep away from walls
+                const y = yOffset + (Math.random() - 0.5) * (areaHeight - 2);
+                const radius = 0.2 + Math.random() * 0.3; // Random radius between 0.2 and 0.5
+
+                const circle = world.addCircle(x, y, radius, 1, false);
+                circle.restitution = 1.0; // Perfectly bouncy
+                circle.friction = 0.1; // Low friction
+
+                // Give them some initial velocity
+                circle.velocity.x = (Math.random() - 0.5) * 4;
+                circle.velocity.y = (Math.random() - 0.5) * 4;
+            }
+
+            // Add some stacked boxes
+            const boxSize = 0.4;
+            const stackHeight = 2;  // Reduced from 4 to 2
+            const stackX = -2;
+
+            for (let i = 0; i < stackHeight; i++) {
+                const box = world.addBox(stackX, yOffset + (-areaHeight / 2 + wallThickness + boxSize / 2 + i * boxSize), boxSize, boxSize);
+                //box.restitution = 1.0; // Make boxes perfectly bouncy too
+                box.friction = 0.1;    // Low friction like circles
+            }
+
+            // Add another smaller stack
+            const smallBoxSize = 0.3;
+            const smallStackHeight = 2;  // Reduced from 3 to 2
+            const smallStackX = 2.5;
+
+            for (let i = 0; i < smallStackHeight; i++) {
+                const box = world.addBox(smallStackX, yOffset + (-areaHeight / 2 + wallThickness + smallBoxSize / 2 + i * smallBoxSize), smallBoxSize, smallBoxSize);
+                box.restitution = 1.0; // Make boxes perfectly bouncy too
+                box.friction = 0.1;    // Low friction like circles
+            }
+
+            if (!useFriction) {
+                world.objects.forEach(obj => {
+                    if (!obj.isStatic) {
+                        obj.friction = 0;
+                    }
+                });
+            }
+
+            world.objects.forEach(obj => {
+                obj.restitution = 1;
+            });
+        }
+
+        // Controls for the simulation
+        const controls = {
+            "Scene": ["Boxes", "Dominoes", "Stack", "Composite shapes", "Bouncy"]
+        };
+
+        // Create GUI
+        ez.gui(controls, {
+            "Scene": (val) => {
+                switch (val) {
+                    case "Boxes":
+                        setupBoxesScene();
+                        break;
+                    case "Dominoes":
+                        setupDominoesScene();
+                        break;
+                    case "Stack":
+                        setupStackScene();
+                        break;
+                    case "Composite shapes":
+                        setupStarScene();
+                        break;
+                    case "Bouncy":
+                        setupBouncyScene();
+                        break;
+                }
+            }
+        }, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                // Get theme from URL parameter
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        });
+
+        // Set up initial scene
+        setupBoxesScene();
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey")
+            ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey")
+
+            // Render physics objects
+            PhysRenderer.render(world)
+
+            // Update physics
+            world.step(dt)
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+
+        PhysRenderer.initMouseControls(world)
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1100">
+	<title>Wooden Sign - Thanks for watching</title>
+
+	<defs>
+		<!-- Base wood gradient -->
+		<linearGradient id="woodBase" x1="0" y1="0" x2="0" y2="1">
+			<stop offset="0" stop-color="#d6a166"/>
+			<stop offset="0.5" stop-color="#b37840"/>
+			<stop offset="1" stop-color="#c48a55"/>
+		</linearGradient>
+
+		<!-- Horizontal wood grain (for frame) -->
+		<filter id="woodTextureHorizontal" x="0%" y="0%" width="100%" height="100%">
+			<feTurbulence type="fractalNoise" baseFrequency="0.025 0.15" numOctaves="4" seed="7" result="turb"/>
+			<feColorMatrix in="turb" type="matrix" values="
+				0.6 0 0 0 0.2
+				0 0.4 0 0 0.15
+				0 0 0.2 0 0.1
+				0 0 0 1 0" result="woodColor"/>
+			<feBlend in="SourceGraphic" in2="woodColor" mode="multiply"/>
+		</filter>
+
+		<!-- Vertical wood grain (for post) -->
+		<filter id="woodTextureVertical" x="0%" y="0%" width="100%" height="100%">
+			<feTurbulence type="fractalNoise" baseFrequency="0.15 0.025" numOctaves="4" seed="9" result="turb"/>
+			<feColorMatrix in="turb" type="matrix" values="
+				0.6 0 0 0 0.2
+				0 0.4 0 0 0.15
+				0 0 0.2 0 0.1
+				0 0 0 1 0" result="woodColor"/>
+			<feBlend in="SourceGraphic" in2="woodColor" mode="multiply"/>
+		</filter>
+
+		<!-- Paper subtle texture -->
+		<filter id="paper" x="0%" y="0%" width="100%" height="100%">
+			<feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="2" seed="8" result="n"/>
+			<feColorMatrix in="n" type="matrix" values="
+				0 0 0 0 0.05
+				0 0 0 0 0.05
+				0 0 0 0 0.05
+				0 0 0 0.12 0" result="grain"/>
+			<feBlend in="SourceGraphic" in2="grain" mode="multiply"/>
+		</filter>
+
+		<style><![CDATA[
+			@font-face{
+				font-family: "RoundedFallback";
+				src: local("Arial Rounded MT Bold"), local("Comic Sans MS");
+			}
+			.text{
+				font-family: "RoundedFallback", "Baloo 2", "Fredoka", "Nunito", system-ui, sans-serif;
+				font-size: 72px;
+				font-weight: 700;
+				fill: #101010;
+				letter-spacing: 0.5px;
+			}
+		]]></style>
+	</defs>
+
+	<!-- Post (vertical grain, longer) -->
+	<rect x="474" y="200" width="52" height="850" rx="10" fill="url(#woodBase)" filter="url(#woodTextureVertical)" />
+
+	<!-- Frame (horizontal grain) -->
+	<rect x="200" y="200" width="600" height="360" rx="14" fill="url(#woodBase)" filter="url(#woodTextureHorizontal)" stroke="#8b5a2b" stroke-width="4"/>
+
+	<!-- White sign panel -->
+	<rect x="260" y="250" width="480" height="260" rx="8" fill="#fff" stroke="#d9d9d9" stroke-width="5" filter="url(#paper)"/>
+
+	<!-- Text -->
+	<text class="text" x="500" y="360" text-anchor="middle">
+		<tspan x="500" dy="0">Thanks for</tspan>
+		<tspan x="500" dy="90">watching</tspan>
+	</text>
+</svg>

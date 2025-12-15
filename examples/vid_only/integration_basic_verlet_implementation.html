@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Minimal Verlet Physics Demo</title>
+</head>
+
+<body>
+    <script src="../ezdraw.js"></script>
+    <script src="integration_basic_verlet_phys.js"></script>
+    <script src="integration_basic_verlet_renderer.js"></script>
+    <script>
+        // Setup EZDraw
+        const canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+
+        // Camera setup (same pattern as the basic integration demo)
+        const worldHeight = 16;
+
+        function updateCamera() {
+            const aspect = canvas.width / canvas.height;
+            const worldWidth = worldHeight * aspect;
+            ez.letterBoxCamera(vec2(0, 0), vec2(worldWidth, worldHeight), true);
+        }
+        updateCamera();
+        window.addEventListener('resize', updateCamera);
+
+        // Physics setup
+        window.world = new PhysWorldVerlet();
+        VerletRenderer.initInteraction(world);
+        // Floor exactly at the bottom of the camera bounds so particles can't fall through
+        const floorY = -worldHeight * 0.5;
+        // Softer constraint stiffness so shapes feel squishier / bouncier
+        const SHAPE_STIFFNESS = 0.01;
+        // Gravity toggle (press G to toggle on/off)
+        let gravityEnabled = false;
+        function applyGravitySetting() {
+            world.gravity = gravityEnabled ? new Vec2(0, -9.81) : new Vec2(0, 0);
+        }
+        applyGravitySetting();
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'g' || e.key === 'G') {
+                gravityEnabled = !gravityEnabled;
+                applyGravitySetting();
+            } else if (e.key === 'v' || e.key === 'V') {
+                // Convenience: trigger the same behavior as calling hotReload()
+                if (typeof hotReload === 'function') {
+                    hotReload();
+                }
+            }
+        });
+
+        // Utility to reset world state
+        function resetWorld() {
+            world.objects.length = 0;
+            world.constraints.length = 0;
+        }
+
+        // Polygon constraint helpers
+        function addRingConstraints(nodes) {
+            const count = nodes.length;
+            if (count < 2) return;
+            for (let i = 0; i < count; i++) {
+                const a = nodes[i];
+                const b = nodes[(i + 1) % count];
+                world.addDistanceConstraint(a, b, null, SHAPE_STIFFNESS);
+            }
+        }
+
+        // "Cross hatch" constraints: connect all non-neighbor node pairs.
+        function addCrossHatchConstraints(nodes) {
+            const count = nodes.length;
+            if (count < 4) return; // triangle is already rigid with ring constraints
+            for (let i = 0; i < count; i++) {
+                for (let j = i + 1; j < count; j++) {
+                    const areNeighbors =
+                        j === (i + 1) % count || (i === 0 && j === count - 1);
+                    if (!areNeighbors) {
+                        const a = nodes[i];
+                        const b = nodes[j];
+                        world.addDistanceConstraint(a, b, null, SHAPE_STIFFNESS);
+                    }
+                }
+            }
+        }
+
+        // Shape builders: 1 point, 2 points, triangle, square, pentagon, hexagon
+
+        function createSinglePoint() {
+            resetWorld();
+            const p = new VerletObject(0, 0);
+            world.addObject(p);
+        }
+
+        function createTwoPoints() {
+            resetWorld();
+            const a = new VerletObject(-1, 0);
+            const b = new VerletObject(1, 0);
+            world.addObject(a);
+            world.addObject(b);
+            world.addDistanceConstraint(a, b, null, SHAPE_STIFFNESS);
+        }
+
+        function createTriangle() {
+            resetWorld();
+            const radius = 2.0;
+            const center = new Vec2(0, 0);
+            const count = 3;
+            const nodes = [];
+            for (let i = 0; i < count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const x = center.x + radius * Math.cos(angle);
+                const y = center.y + radius * Math.sin(angle);
+                const node = new VerletObject(x, y);
+                world.addObject(node);
+                nodes.push(node);
+            }
+            addRingConstraints(nodes);
+        }
+
+        function createSquare() {
+            resetWorld();
+            const radius = 2.0;
+            const center = new Vec2(0, 0);
+            const count = 4;
+            const nodes = [];
+            for (let i = 0; i < count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const x = center.x + radius * Math.cos(angle);
+                const y = center.y + radius * Math.sin(angle);
+                const node = new VerletObject(x, y);
+                world.addObject(node);
+                nodes.push(node);
+            }
+            addRingConstraints(nodes);
+            addCrossHatchConstraints(nodes);
+        }
+
+        function createPentagon() {
+            resetWorld();
+            const radius = 2.0;
+            const center = new Vec2(0, 0);
+            const count = 5;
+            const nodes = [];
+            for (let i = 0; i < count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const x = center.x + radius * Math.cos(angle);
+                const y = center.y + radius * Math.sin(angle);
+                const node = new VerletObject(x, y);
+                world.addObject(node);
+                nodes.push(node);
+            }
+            addRingConstraints(nodes);
+            addCrossHatchConstraints(nodes);
+        }
+
+        function createSpinningHexagon() {
+            resetWorld();
+
+            const center = new Vec2(0, 0);
+            const radius = 2.0;
+            const count = 6;
+
+            const nodes = [];
+            for (let i = 0; i < count; i++) {
+                const angle = (i / count) * Math.PI * 2;
+                const x = center.x + radius * Math.cos(angle);
+                const y = center.y + radius * Math.sin(angle);
+                const node = new VerletObject(x, y);
+                world.addObject(node);
+                nodes.push(node);
+            }
+
+            // Ring + full cross-hatch constraints for stability
+            addRingConstraints(nodes);
+            addCrossHatchConstraints(nodes);
+
+            // Add a little tangential "velocity" to one node so the shape starts spinning.
+            const spinNode = nodes[1];
+            const tangent = new Vec2(0.5, -0.2);
+            const spinMagnitude = 0.1;
+            spinNode.prevPosition = spinNode.position.sub(tangent.scale(spinMagnitude));
+        }
+
+        // Cycle through shapes each time hotReload is called:
+        // 1: single point, 2: two points, 3: triangle, 4: square, 5: pentagon, 6+: hexagon
+        let currentShapeIndex = 1;
+
+        function hotReload() {
+            if (currentShapeIndex === 1) {
+                createSinglePoint();
+            } else if (currentShapeIndex === 2) {
+                createTwoPoints();
+            } else if (currentShapeIndex === 3) {
+                createTriangle();
+            } else if (currentShapeIndex === 4) {
+                createSquare();
+            } else if (currentShapeIndex === 5) {
+                createPentagon();
+            } else {
+                createSpinningHexagon();
+            }
+
+            if (currentShapeIndex < 6) {
+                currentShapeIndex += 1;
+            }
+        }
+        window.hotReload = hotReload;
+
+        // Animation loop
+        function update(dt) {
+            ez.clear();
+            ez.gridSvg(1, Infinity); // Optional grid
+
+            world.step(dt);
+
+            // Floor collision: keep all particles above floorY
+            for (const obj of world.objects) {
+                if (obj.position.y < floorY) {
+                    obj.position.y = floorY;
+                    if (obj.prevPosition.y < floorY) {
+                        obj.prevPosition.y = floorY;
+                    }
+                }
+            }
+
+            VerletRenderer.updateDragging();
+            VerletRenderer.render(world);
+        }
+
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>
+
+

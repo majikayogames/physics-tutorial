@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Moment of Inertia Demo</title>
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true)
+
+        // --- Create Offscreen Canvas for Particles ---
+        const particleCanvas = document.createElement('canvas');
+        particleCanvas.width = canvas.width;
+        particleCanvas.height = canvas.height;
+        const particleCtx = particleCanvas.getContext('2d');
+        // --------------------------------------------
+
+        // Create physics world (if needed, maybe not for this demo initially)
+        // let world = new PhysWorld()
+
+        // Color palette and outline color from simple_phys_ezdraw_renderer.js
+        const _palette = [
+            "#FFB3BA", "#BAFFC9", "#BAE1FF", "#FFFFBA",
+            "#FFB5E8", "#B5FFCE", "#B5B9FF", "#F3FFB5",
+            "#FFC9DE", "#C9FFF7", "#C5A3FF", "#FFE5A3"
+        ]
+        const _outlineColor = "#2F3437"
+
+        // Common text options based on user example
+        const textOptions = {
+            fontFamily: "'Source Sans Pro', sans-serif",
+            fontSize: 16,
+            textAlign: 'left',
+            textBaseline: 'bottom',
+            fontStyle: '600'
+        };
+
+        // --- Demo Specific Setup ---
+        // Helper for linear interpolation
+        function vec_2_lerp(v1, v2, t) {
+            return new Vec2(v1.x * (1 - t) + v2.x * t, v1.y * (1 - t) + v2.y * t);
+        }
+
+        // Helper to create box vertices centered at origin
+        function createBoxVertices(width, height) {
+            const hw = width / 2;
+            const hh = height / 2;
+            return [
+                new Vec2(-hw, -hh), new Vec2(hw, -hh), new Vec2(hw, hh), new Vec2(-hw, hh)
+            ];
+        }
+
+        // Moment of Inertia calculation for a polygon (assuming mass = 1)
+        function calculateMomentOfInertia(vertices) {
+            const mass = 1.0; // Assume uniform mass density and total mass = 1
+            let numerator = 0;
+            let denominator = 0;
+
+            for (let i = 0; i < vertices.length; i++) {
+                const v1 = vertices[i];
+                const v2 = vertices[(i + 1) % vertices.length];
+
+                // Using Green's theorem based formula for polygon inertia
+                const cross = v1.x * v2.y - v2.x * v1.y; // 2 * signed area of triangle (0, v1, v2)
+                const term1 = v1.x * v1.x + v1.y * v1.y; // Dot product v1 . v1
+                const term2 = v1.x * v2.x + v1.y * v2.y; // Dot product v1 . v2
+                const term3 = v2.x * v2.x + v2.y * v2.y; // Dot product v2 . v2
+
+                numerator += cross * (term1 + term2 + term3);
+                denominator += cross;
+            }
+
+            // Avoid division by zero for degenerate polygons
+            if (Math.abs(denominator) < 1e-9) {
+                return 0;
+            }
+
+            // Area = denominator / 2
+            // Formula for uniform density polygon inertia = (mass / 6) * (numerator / denominator)
+            return (mass / 6.0) * (numerator / denominator);
+        }
+
+        // Helper to parse hex color string to RGB array [r, g, b] (0-255)
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? [
+                parseInt(result[1], 16),
+                parseInt(result[2], 16),
+                parseInt(result[3], 16)
+            ] : null;
+        }
+
+        // Helper to interpolate between two RGB colors
+        function interpolateRgb(rgb1, rgb2, t) {
+            return [
+                Math.round(rgb1[0] * (1 - t) + rgb2[0] * t),
+                Math.round(rgb1[1] * (1 - t) + rgb2[1] * t),
+                Math.round(rgb1[2] * (1 - t) + rgb2[2] * t)
+            ];
+        }
+
+        // Helper to format RGB array back to hex string
+        function rgbToHex(rgb) {
+            const componentToHex = (c) => {
+                const hex = c.toString(16);
+                return hex.length == 1 ? "0" + hex : hex;
+            };
+            return "#" + componentToHex(rgb[0]) + componentToHex(rgb[1]) + componentToHex(rgb[2]);
+        }
+
+        // --- Vector Math Helpers (assuming some might not be in simple_phys.js) ---
+        // (Add these if not present or defined differently in included scripts)
+        function vec_2_add(v1, v2) { return new Vec2(v1.x + v2.x, v1.y + v2.y); }
+        function vec_2_sub(v1, v2) { return new Vec2(v1.x - v2.x, v1.y - v2.y); }
+        function vec_2_dot(v1, v2) { return v1.x * v2.x + v1.y * v2.y; }
+        function vec_2_scale(v, s) { return new Vec2(v.x * s, v.y * s); }
+        function vec_2_lengthSq(v) { return vec_2_dot(v, v); }
+        function vec_2_length(v) { return Math.sqrt(vec_2_lengthSq(v)); }
+        function vec_2_normalize(v) {
+            const len = vec_2_length(v);
+            if (len < 1e-9) return new Vec2(0, 0);
+            return new Vec2(v.x / len, v.y / len);
+        }
+        function vec_2_reflect(vel, normal) {
+            // Assumes normal is normalized
+            // v' = v - 2 * dot(v, n) * n
+            const dot = vec_2_dot(vel, normal);
+            return vec_2_sub(vel, vec_2_scale(normal, 2 * dot));
+        }
+
+        // Point-in-Polygon check (for convex polygons)
+        // Checks if point P is to the left of all edges (v[i] -> v[i+1])
+        function isPointInsidePolygon(point, vertices) {
+            if (vertices.length < 3) return false;
+            for (let i = 0; i < vertices.length; i++) {
+                const v1 = vertices[i];
+                const v2 = vertices[(i + 1) % vertices.length];
+                const edge = vec_2_sub(v2, v1);
+                const to_point = vec_2_sub(point, v1);
+                // Cross product (edge.x * to_point.y - edge.y * to_point.x) determines side
+                // For counter-clockwise vertices, a positive cross product means "left"
+                const cross_product = edge.x * to_point.y - edge.y * to_point.x;
+                if (cross_product < 0) { // If point is to the right of any edge
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        // Optimized Point-in-Polygon check (for convex polygons)
+        // Returns { inside: true } or { inside: false, edgeIndex: i, normal: edgeNormal }
+        function checkPointInsidePolygonOptimized(point, vertices) {
+            if (vertices.length < 3) return { inside: false, edgeIndex: -1, normal: new Vec2(0, 0) };
+            for (let i = 0; i < vertices.length; i++) {
+                const v1 = vertices[i];
+                const v2 = vertices[(i + 1) % vertices.length];
+                const edge = vec_2_sub(v2, v1);
+                const to_point = vec_2_sub(point, v1);
+                const cross_product = edge.x * to_point.y - edge.y * to_point.x;
+                if (cross_product < -1e-9) { // Add tolerance for floating point issues
+                    // Point is outside this edge
+                    const edgeLenSq = vec_2_lengthSq(edge);
+                    // Avoid division by zero for degenerate edges
+                    const normal = edgeLenSq > 1e-9 ? vec_2_normalize(new Vec2(-edge.y, edge.x)) : new Vec2(0, 0);
+                    return { inside: false, edgeIndex: i, normal: normal };
+                }
+            }
+            // Point is inside all edges
+            return { inside: true };
+        }
+
+        // --- Particle System Setup ---
+        let numParticles = 1000; // Adjustable via GUI
+        const particleRadius = 0.0125; // Make particles smaller
+        const particleColors = ["#E57373BB", "#64B5F6BB"]; // Darker Red/Blue, More Translucent (BB alpha)
+
+        // Global time accumulator for deterministic jitter (NEW)
+        let globalTime = 0;
+
+        // Box object
+        let box = {
+            vertices: createBoxVertices(1, 1), // Start as a 1x1 square
+            pos: new Vec2(0, 0),
+            angle: 0,
+            color: _palette[0],
+            mass: 1,
+            momentOfInertia: 0,
+            center: new Vec2(0, 0) // Cache for geometric center
+        };
+        let particleMass = box.mass / numParticles; // Mass per particle, updated when count changes
+        // Function to calculate and update center
+        function updateBoxCenter(b) {
+            let centerX = 0, centerY = 0;
+            if (b.vertices.length > 0) {
+                b.vertices.forEach(v => { centerX += v.x; centerY += v.y; });
+                centerX /= b.vertices.length;
+                centerY /= b.vertices.length;
+            }
+            b.center = new Vec2(centerX, centerY);
+        }
+        updateBoxCenter(box); // Initial calculation
+        box.momentOfInertia = calculateMomentOfInertia(box.vertices); // Calculate initial inertia
+
+        // Deterministic pseudo-random generator (LCG) (NEW)
+        function createRNG(seed) {
+            return () => {
+                seed = (seed * 1664525 + 1013904223) >>> 0;
+                return seed / 4294967296;
+            };
+        }
+
+        const rngSeedBase = 123456; // keep constant for reproducibility
+
+        // Jitter behaviour constants (NEW)
+        const jitterAmplitude = 0.03;      // world-units max amplitude
+        const jitterFreqMin   = 1.0;       // rad/s
+        const jitterFreqRange = 2.0;       // additional random range
+
+        // Initialize Particles inside the initial box
+        function initializeParticles() {
+            particles = [];
+            const initialVertices = box.vertices;
+            const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+            initialVertices.forEach(v => {
+                bounds.minX = Math.min(bounds.minX, v.x);
+                bounds.maxX = Math.max(bounds.maxX, v.x);
+                bounds.minY = Math.min(bounds.minY, v.y);
+                bounds.maxY = Math.max(bounds.maxY, v.y);
+            });
+
+            const rng = createRNG(rngSeedBase);
+            while (particles.length < numParticles) {
+                const relX = rng(); // [0,1)
+                const relY = rng();
+
+                const width = bounds.maxX - bounds.minX;
+                const height = bounds.maxY - bounds.minY;
+                const pos = new Vec2(bounds.minX + relX * width, bounds.minY + relY * height);
+
+                // Jitter params per particle (deterministic)
+                const ax = jitterAmplitude * (0.5 + rng());
+                const ay = jitterAmplitude * (0.5 + rng());
+                const fx = jitterFreqMin + jitterFreqRange * rng();
+                const fy = jitterFreqMin + jitterFreqRange * rng();
+                const phaseX = rng() * 2 * Math.PI;
+                const phaseY = rng() * 2 * Math.PI;
+                const color = particleColors[Math.floor(rng() * particleColors.length)];
+
+                particles.push({
+                    relX: relX,
+                    relY: relY,
+                    basePos: pos,
+                    pos: pos,
+                    ax: ax,
+                    ay: ay,
+                    fx: fx,
+                    fy: fy,
+                    phaseX: phaseX,
+                    phaseY: phaseY,
+                    color: color
+                });
+            }
+
+            // Derived mass per particle
+            particleMass = box.mass / numParticles;
+        }
+        initializeParticles(); // Call initialization
+
+        // Predefined list of box shapes (width, height)
+        const shapePresets = [
+            { width: 1.0, height: 1.0 }, // Square
+            { width: 2.5, height: 0.5 }, // Wide rectangle
+            { width: 0.5, height: 2.5 }, // Tall rectangle
+            { width: 2.0, height: 2.0 }, // Large Square
+            { width: 0.3, height: 1.5 }, // Thin Tall
+            { width: 1.5, height: 0.3 }  // Thin Wide
+        ];
+        let currentShapeIndex = 0;
+
+        // State machine for shape changing
+        let currentState = 'paused'; // 'interpolating', 'paused', 'generating'
+        let targetVertices = [];
+        let startVertices = []; // Store vertices at the start of interpolation
+        let interpolationTimer = 0;
+        let pauseTimer = 0;
+        const interpolationDuration = 1.0; // seconds
+        const pauseDuration = 5.0; // seconds
+        let startColorRgb = null;
+        let targetColorRgb = null;
+
+        // Function to calculate moment of inertia from particle distribution
+        function computeMomentOfInertiaFromParticles(particles) {
+            let I_particles = 0;
+            for (const p of particles) {
+                const r2 = p.pos.x * p.pos.x + p.pos.y * p.pos.y; // x^2 + y^2
+                I_particles += particleMass * r2;
+            }
+            return I_particles;
+        }
+
+        // GUI to control particle count
+        const guiControls = {
+            "Number of particles": numParticles,
+            _hints: { "Number of particles": { min: 100, max: 10000, step: 100 } }
+        };
+
+        ez.gui(guiControls, {
+            "Number of particles": (val) => {
+                numParticles = Math.max(1, Math.floor(val));
+                particleMass = box.mass / numParticles;
+                initializeParticles(); // Re-seed simulation with new count
+            }
+        }, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        });
+
+        // --- Main animation function ---
+        function update(dt) {
+            // --- Clamp dt to prevent physics explosions on tab reactivate ---
+            dt = Math.min(dt, 1 / 30); // Max dt corresponds to 30 FPS
+            globalTime += dt; // advance time for jitter
+
+            // Compute current bounding box of the polygon (needed for jitter & later logic)
+            const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+            box.vertices.forEach(v => {
+                bounds.minX = Math.min(bounds.minX, v.x);
+                bounds.maxX = Math.max(bounds.maxX, v.x);
+                bounds.minY = Math.min(bounds.minY, v.y);
+                bounds.maxY = Math.max(bounds.maxY, v.y);
+            });
+
+            const currentWidth = bounds.maxX - bounds.minX;
+            const currentHeight = bounds.maxY - bounds.minY;
+
+            particles.forEach(p => {
+                // Refresh base position inside evolving rectangle
+                p.basePos = new Vec2(bounds.minX + p.relX * currentWidth, bounds.minY + p.relY * currentHeight);
+
+                const offX = p.ax * Math.sin(globalTime * p.fx + p.phaseX);
+                const offY = p.ay * Math.sin(globalTime * p.fy + p.phaseY);
+                const candidate = vec_2_add(p.basePos, new Vec2(offX, offY));
+                p.pos = isPointInsidePolygon(candidate, box.vertices) ? candidate : p.basePos;
+            });
+            // --------------------------------------------------------------
+
+            ez.clear()
+
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey")
+            ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey")
+
+            // --- Draw Box First (on main canvas) ---
+            const ezVertices = box.vertices.map(v => vec2(v.x, v.y));
+            ez.path(ezVertices, true, false).fill(box.color + "EE"); // Slightly transparent fill
+            ez.ctx.lineWidth = 1;
+            ez.path(ezVertices, true, false).stroke(_outlineColor);
+
+            // --- Draw Particles onto Offscreen Canvas ---
+            particleCtx.clearRect(0, 0, particleCanvas.width, particleCanvas.height); // Clear particle canvas
+            const screenRadius = particleRadius * 100; // Convert world radius to screen pixels
+            const scaleX = 1 / ez.camera.getBasis().col1.x; // Correct scale factor
+            const scaleY = 1 / -ez.camera.getBasis().col2.y; // Correct scale factor (Y inverted)
+            const offsetX = canvas.width / 2;
+            const offsetY = canvas.height / 2;
+
+            // Draw particles individually onto particleCtx
+            particles.forEach(p => {
+                const screenX = p.pos.x * scaleX + offsetX;
+                const screenY = p.pos.y * scaleY + offsetY;
+                particleCtx.fillStyle = p.color; // Set color for each particle
+                particleCtx.beginPath();
+                particleCtx.arc(screenX, screenY, screenRadius, 0, 2 * Math.PI);
+                particleCtx.fill(); // Fill each particle individually
+            });
+
+            // --- Draw Particle Canvas onto Main Canvas with Alpha ---
+            ez.ctx.globalAlpha = 0.75; // Set transparency for the particle layer
+            ez.ctx.drawImage(particleCanvas, 0, 0);
+            ez.ctx.globalAlpha = 1.0; // Reset global alpha
+            // -------------------------------------------------------
+
+            // --- Update State Machine ---
+            if (currentState === 'generating') {
+                currentShapeIndex = (currentShapeIndex + 1) % shapePresets.length;
+                const preset = shapePresets[currentShapeIndex];
+                targetVertices = createBoxVertices(preset.width, preset.height);
+                startVertices = box.vertices.map(v => new Vec2(v.x, v.y)); // Deep copy current vertices
+                // Get start and target colors for interpolation
+                startColorRgb = hexToRgb(box.color);
+                targetColorRgb = hexToRgb(_palette[currentShapeIndex % _palette.length]);
+                // box.color = _palette[currentShapeIndex % _palette.length]; // Update color instantly (removed for interpolation)
+                interpolationTimer = 0;
+                currentState = 'interpolating';
+
+            } else if (currentState === 'interpolating') {
+                interpolationTimer += dt;
+                const t = Math.min(1, interpolationTimer / interpolationDuration);
+                box.vertices = startVertices.map((startV, i) => vec_2_lerp(startV, targetVertices[i], t));
+                updateBoxCenter(box); // <-- Update center when vertices change
+                box.momentOfInertia = calculateMomentOfInertia(box.vertices);
+                // Interpolate color
+                if (startColorRgb && targetColorRgb) {
+                    const interpolatedRgb = interpolateRgb(startColorRgb, targetColorRgb, t);
+                    box.color = rgbToHex(interpolatedRgb);
+                }
+
+                if (t === 1) {
+                    pauseTimer = 0;
+                    initializeParticles(); // regenerate deterministic particle field for new shape
+                    currentState = 'paused';
+                }
+            } else if (currentState === 'paused') {
+                pauseTimer += dt;
+                if (pauseTimer >= pauseDuration) {
+                    currentState = 'generating';
+                }
+            }
+
+            // --- Calculate and Display Inertia ---
+            const inertia_analytical = box.momentOfInertia;
+            const inertia_particles = computeMomentOfInertiaFromParticles(particles);
+
+            // --- Draw Text/Info ---
+            // Calculate world position for bottom-left corner text
+            const screenX = 20;
+            const screenY = canvas.height - 20;
+            const textPos = ez.screenToWorld(vec2(screenX, screenY)); // Use ez function for correct conversion
+
+            // Display Moment of Inertia in a single line
+            const combinedText = `Analytical I = ${inertia_analytical.toFixed(4)} | Particle Approx. I = ${inertia_particles.toFixed(4)}`;
+            ez.text(combinedText, textPos, textOptions).fill("#000000"); // Black text
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dot Product and Cosine Visualization</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        // Adjusted camera for unit circle
+        ez.letterBoxCamera(vec2(0, -0.3), vec2(3.5, 3.5), true)
+
+        let vectorA = vec2(1, 0).normalized(); // Fixed vector pointing right
+        let vectorB = vec2(1, 0).normalized();  // Rotating vector, starts pointing right
+        let currentAngle = 0; // Angle for rotating vectorB in radians
+        const rotationSpeed = 0.6; // Radians per second
+        let lastTime = 0;
+
+        function formatNumber(num, precision = 2) {
+            const fixedStr = num.toFixed(precision);
+            // Handle cases like "-0", "-0.0", "-0.00" etc. that should be displayed as positive zero.
+            if (parseFloat(fixedStr) === 0 && fixedStr.startsWith('-')) {
+                if (precision === 0) {
+                    return "0";
+                }
+                return "0." + "0".repeat(precision);
+            }
+            return fixedStr;
+        }
+
+        function draw(time) {
+            const rawDelta = lastTime === 0 ? 0 : (time - lastTime) / 1000.0;
+            const deltaTime = Math.min(rawDelta, 1 / 30);
+            lastTime = time;
+
+            ez.clear();
+            drawGrid();
+            drawUnitCircle();
+
+            // Update rotating vector based on real time
+            currentAngle += rotationSpeed * deltaTime;
+            currentAngle = currentAngle % (2 * Math.PI);
+            vectorB = vec2(1, 0).rotated(currentAngle);
+
+            drawVectors();
+
+            ez.save()
+            // If between 350 and 360 deg, fade out out arc & text
+            ez.ctx.globalAlpha = currentAngle > 340 * Math.PI / 180 ? 1.0 - (currentAngle - 340 * Math.PI / 180) / (20 * Math.PI / 180) : 1;
+            ez.arc(vec2(0, 0), -currentAngle, currentAngle, .2, true).fill("#00000033", { lineWidth: 2 });
+            ez.arc(vec2(0, 0), -currentAngle, currentAngle, .2, false).stroke("#555", { lineWidth: 3 });
+            if(currentAngle < 5 * Math.PI / 180) {
+                // Fade in text
+                ez.ctx.globalAlpha = (currentAngle - 0 * Math.PI / 180) / (5 * Math.PI / 180);
+            }
+            ez.textWorldScaledBuffered('θ', vec2(.28,0).rotated(currentAngle/2), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 1.5, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#555");
+            ez.restore()
+
+            showDotProductAndCosine();
+            requestAnimationFrame(draw);
+        }
+
+        function drawGrid() {
+            // Simplified grid for a unit circle view
+            ez.grid(vec2(1, 1), 50).stroke(0xdddddd);
+        }
+
+        function drawUnitCircle() {
+            ez.circle(vec2(0,0), 1).stroke(0xbbbbbb, {lineWidth: 2});
+        }
+
+        function drawVectors() {
+            // Draw vectorA (fixed)
+            ez.arrow(vec2(0, 0), vectorA, 10).fillAndStroke("#FFC04D", "#FFC04D", { lineWidth: 3, lineJoin: "round" });
+            ez.textBuffered(`A`, vectorA.add(vec2(0.15, 0)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#FFC04D");
+
+            // Draw vectorB (rotating)
+            ez.arrow(vec2(0, 0), vectorB, 10).fillAndStroke("#6495ED", "#6495ED", { lineWidth: 3, lineJoin: "round" });
+            ez.textBuffered(`B`, vectorB.add(vectorB.normalized().scaled(0.15)), { fontFamily: "'Source Sans Pro', sans-serif", fontSize: 16, textAlign: 'center', fontStyle: "bold", textBaseline: 'middle' }).fill("#6495ED");
+
+            // Draw triangle connecting the vector endpoints
+            drawTriangle();
+            
+            // Draw right angle symbol when vectors are approximately perpendicular
+            drawRightAngleSymbol();
+        }
+
+        function drawTriangle() {
+            // Draw the SOH CAH TOA triangle for vector B
+            let endB = vectorB; // End point of vector B on unit circle
+            let cosProjection = vec2(endB.x, 0); // Horizontal projection (cosine)
+            let sinProjection = vec2(endB.x, endB.y); // This is the same as endB, but helps conceptually
+            
+            // Draw horizontal line (cosine component)
+            ez.line(vec2(0, 0), cosProjection).stroke("#4169E1", { lineWidth: 3 });
+            
+            // Draw vertical line (sine component)  
+            ez.line(cosProjection, endB).stroke("#32CD32", { lineWidth: 3 });
+            
+            // Label the cosine component
+            if (Math.abs(endB.x) > 0.1) { // Only show label if projection is significant
+                ez.textBuffered(`cos(θ)`, vec2(endB.x / 2, -0.15), { 
+                    fontFamily: "'Source Sans Pro', sans-serif", 
+                    fontSize: 14, 
+                    textAlign: 'center', 
+                    fontStyle: "bold" 
+                }).fill("#4169E1");
+            }
+            
+            // Label the sine component
+            if (Math.abs(endB.y) > 0.1) { // Only show label if projection is significant
+                ez.textBuffered(`sin(θ)`, vec2(endB.x + 0.19, endB.y / 2), { 
+                    fontFamily: "'Source Sans Pro', sans-serif", 
+                    fontSize: 14, 
+                    textAlign: 'center', 
+                    fontStyle: "bold" 
+                }).fill("#32CD32");
+            }
+        }
+
+        function drawRightAngleSymbol() {
+            let endB = vectorB;
+            let cosProjection = vec2(endB.x, 0);
+            
+            // Always draw right angle symbol at the corner of the triangle (where cos and sin meet)
+            if (Math.abs(endB.x) > 0.1 && Math.abs(endB.y) > 0.1) { // Only if both components are significant
+                let size = 0.1; // Size of the right angle symbol
+                
+                // Draw small square at the right angle corner
+                let corner = cosProjection;
+                
+                // Determine direction to draw the square so it's always inside the triangle
+                let xDir = endB.x > 0 ? -size : size; // If vector is on right side, draw square to the left
+                let yDir = size * Math.sign(endB.y);
+                
+                let p1 = corner.add(vec2(xDir, 0));
+                let p2 = corner.add(vec2(xDir, yDir));
+                let p3 = corner.add(vec2(0, yDir));
+                
+                ez.line(corner, p1).stroke("#FF6B6B", { lineWidth: 2 });
+                ez.line(p1, p2).stroke("#FF6B6B", { lineWidth: 2 });
+                ez.line(p2, p3).stroke("#FF6B6B", { lineWidth: 2 });
+            }
+        }
+
+        function showDotProductAndCosine() {
+            let dotProduct = vectorA.dot(vectorB);
+            
+            // The angle between (1,0) and vectorA is PI. The angle of vectorB is currentAngle.
+            // So the angle between vectorA and vectorB is currentAngle - PI or PI - currentAngle
+            // or more generally, the angle whose cosine is vectorA.dot(vectorB) since they are unit vectors.
+            // For simplicity, we'll use currentAngle and compare with dot product.
+            // Since vectorA is now (1,0), its angle is 0. The angle of vectorB is currentAngle.
+            // The angle between A and B is simply currentAngle.
+            // However, Math.acos(vectorA.dot(vectorB)) will give the smallest angle between them.
+            
+            let angleBetween = Math.acos(vectorA.dot(vectorB)); // This is the true angle between A and B
+
+            let displayAngleDegrees = (currentAngle * 180 / Math.PI) % 360;
+            if (displayAngleDegrees < 0) { // Ensure positive angle for display
+                displayAngleDegrees += 360;
+            }
+
+            const textOptions = {
+                fontFamily: "'Source Sans Pro', sans-serif",
+                fontSize: 18,
+                textAlign: "center",
+                textBaseline: "middle",
+                fontStyle: "500"  // Semi-bold
+            };
+
+            //ez.text(`Angle θ: ${formatNumber(displayAngleDegrees, 1)}°`, vec2(0, -1.3), textOptions).fill("black");
+            ez.text(`A • B = ${formatNumber(dotProduct, 2)}`, vec2(0, -1.4), textOptions).fill("black");
+            
+            // The angle used for cos should be the angle *between* the two vectors.
+            // vectorA is now fixed at (1,0), which is 0 radians from (1,0).
+            // vectorB is at currentAngle radians from (1,0).
+            // The angle between A and B is currentAngle.
+            // Cosine is an even function, so cos(x) = cos(-x).
+
+            let cosAngle = Math.cos(currentAngle); // Angle of A is 0, angle of B is currentAngle.
+                                                 // Angle between A and B is currentAngle - 0 = currentAngle.
+
+            ez.text(`cos(θ) = ${formatNumber(cosAngle, 2)}`, vec2(0, -1.6), textOptions).fill("black");
+        }
+
+        requestAnimationFrame(draw);
+    </script>
+</body>
+
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vector Projection Visualization</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+    <script src="ezdraw.js"></script>
+    <script>
+        let canvas = ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true);
+
+        let mainVector = vec2(Math.cos(Math.PI / 5), Math.sin(Math.PI / 5)); // Initial V, approx 36 degrees, normalized
+        let dragging = null;
+
+        const data = {
+            "Project onto Y-axis [Y]": false,
+            _hints: {
+            }
+        };
+
+        const dataCallbacks = {
+            "Project onto Y-axis [Y]": (value) => {
+                // No immediate action needed beyond GUI update
+            },
+        };
+
+        ez.gui(data, dataCallbacks, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true
+        });
+
+        ez.onMouseDown(() => {
+            let mousePos = ez.getMousePosWorld();
+            // Check if close to mainVector's tip for dragging
+            if (mousePos.sub(mainVector).length() < 0.5) {
+                dragging = 'V';
+            }
+        });
+
+        ez.onMouseUp(() => {
+            dragging = null;
+        });
+
+        ez.onMouseDrag(() => {
+            let mousePos = ez.getMousePosWorld();
+            if (dragging === 'V') {
+                mainVector = mousePos.normalized(); // Always normalize after drag
+                if (mainVector.lengthSq() === 0) mainVector = vec2(1,0); // Avoid zero vector, default to X-axis
+            }
+        });
+
+        function formatNumber(num) {
+            let fixed = num.toFixed(2);
+            if (fixed === "-0.00") return "0.00";
+            return fixed;
+        }
+
+        function draw() {
+            ez.clear();
+            drawGrid();
+            drawNumberLine();
+            drawVectorsAndProjections();
+            requestAnimationFrame(draw);
+        }
+
+        function drawGrid() {
+            ez.grid(vec2(1, 1), 50).stroke(0xcccccc);
+        }
+
+        function drawNumberLine() {
+            // Draw infinite line along mainVector direction
+            const lineLength = 10; // Extend line far in both directions
+            const startPoint = mainVector.scaled(-lineLength);
+            const endPoint = mainVector.scaled(lineLength);
+            
+            ez.line(startPoint, endPoint)
+                .stroke("#B0B0B0", { lineWidth: 1, globalAlpha: 1 });
+            
+            // Draw tick marks along the line
+            const tickSpacing = 1.0; // Distance between ticks
+            const tickLength = 0.1; // Length of each tick mark
+            
+            // Get perpendicular vector for tick marks
+            const perpendicular = vec2(-mainVector.y, mainVector.x).scaled(tickLength);
+            
+            // Draw ticks from negative to positive direction
+            for (let i = -Math.floor(lineLength / tickSpacing); i <= Math.floor(lineLength / tickSpacing); i++) {
+                const tickPosition = mainVector.scaled(i * tickSpacing);
+                const tickStart = tickPosition.sub(perpendicular);
+                const tickEnd = tickPosition.add(perpendicular);
+                
+                ez.line(tickStart, tickEnd)
+                    .stroke("#D0D0D0", { lineWidth: 1, globalAlpha: 1 });
+            }
+        }
+
+        function drawVectorsAndProjections() {
+            const currentV = mainVector; // It's always normalized
+            const vUnit = mainVector; // Same as currentV since it's always normalized
+
+            const projectOntoY = data["Project onto Y-axis [Y]"];
+            const axisLength = 1.0; // Fixed at 1.0
+
+            const axisBase = projectOntoY ? vec2(0, 1) : vec2(1, 0);
+            const currentAxis = axisBase.scaled(axisLength);
+            const axisColor = projectOntoY ? "#7FFFA0" : "#FF8A9B"; // Green for Y, Red for X
+            const axisLabel = projectOntoY ? "Y" : "X";
+            const componentOfV = projectOntoY ? currentV.y : currentV.x;
+            const componentOfVUnit = projectOntoY ? vUnit.y : vUnit.x;
+
+
+            // Draw Main Vector (V)
+            ez.arrow(vec2(0,0), currentV, 15).fillAndStroke("#8A8FFF", "#8A8FFF", {lineWidth: 3, lineJoin: "round"});
+            ez.text("V", currentV.add(axisBase.rotated(Math.PI/2).scaled(0.2)), {fontSize:16, textAlign:"center"}).fill("#8A8FFF");
+            ez.text(`V: (${formatNumber(currentV.x)}, ${formatNumber(currentV.y)})`, vec2(0, 1.7), {fontSize:14, textAlign:"center"}).fill("#8A8FFF");
+
+
+            // Draw Axis Vector (length is always 1)
+            ez.arrow(vec2(0,0), currentAxis, 15).fillAndStroke(axisColor, axisColor, {lineWidth: 3, lineJoin: "round"});
+            ez.text(axisLabel, currentAxis.add(axisBase.rotated(-Math.PI/2).scaled(0.2)), {fontSize:16, textAlign:"center"}).fill(axisColor);
+
+
+            // 1. Projection of V onto Axis direction
+            const projVOnAxisVec = axisBase.scaled(componentOfV);
+            ez.line(currentV, projVOnAxisVec, {lineDash: [5,5]}).stroke("#8A8FFF", {lineWidth:2, globalAlpha: 0.4});
+            ez.line(vec2(0,0), projVOnAxisVec).stroke("#8A8FFF", {lineWidth:5, globalAlpha: 0.4});
+            let textPosVOnAxis = projVOnAxisVec.scaled(0.5).add(axisBase.rotated(projectOntoY ? Math.PI/2 : -Math.PI/2).scaled(0.3));
+            ez.text(`${projectOntoY ? "V.y" : "V.x"}: ${formatNumber(componentOfV)}`, textPosVOnAxis, {fontSize:12, textAlign:"center"}).fill("#8A8FFF");
+
+            // 2. Projection of Axis onto V direction
+            // scalar value is axisLength * (component of V_unit along that axis)
+            // vector is this scalar value * V_unit
+            const scalarVal_AxisOnV = axisLength * componentOfVUnit; // axisLength is 1
+            const projAxisOnVVec = vUnit.scaled(scalarVal_AxisOnV);
+            
+            let axisTipToProjDashStart = currentAxis;
+            if (currentAxis.lengthSq() < projAxisOnVVec.lengthSq() && currentAxis.dot(projAxisOnVVec) > 0) {
+                 // If projection is longer than axis and in same general direction, draw dash from projection tip to axis tip
+                 ez.line(projAxisOnVVec, axisTipToProjDashStart, {lineDash: [5,5]}).stroke(axisColor, {lineWidth:2, globalAlpha:0.3});
+            } else {
+                 ez.line(axisTipToProjDashStart, projAxisOnVVec, {lineDash: [5,5]}).stroke(axisColor, {lineWidth:2, globalAlpha:0.3});
+            }
+
+            // Use line instead of arrow, same color as axis
+            ez.line(vec2(0,0), projAxisOnVVec).stroke(axisColor, {lineWidth:5, globalAlpha: 0.4});
+            
+            let textPosAxisOnV = projAxisOnVVec.scaled(0.5).add(vUnit.rotated(projectOntoY ? -Math.PI/2 : Math.PI/2).scaled(0.3));
+            if (projAxisOnVVec.length() < 0.1) textPosAxisOnV = vUnit.scaled(0.2).add(vUnit.rotated(projectOntoY ? -Math.PI/2 : Math.PI/2).scaled(0.3));
+
+            ez.text(`${projectOntoY ? "V.y" : "V.x"}`, textPosAxisOnV, {fontSize:12, textAlign:"center"}).fill(axisColor);
+
+            // Draw line of symmetry (angle bisector)
+            const bisector = currentV.add(axisBase).normalized();
+            const bisectorLength = 8; // Extend line in both directions
+            const bisectorStart = bisector.scaled(-bisectorLength);
+            const bisectorEnd = bisector.scaled(bisectorLength);
+            
+            ez.line(bisectorStart, bisectorEnd, {lineDash: [12, 12]}).stroke("#ccc", {lineWidth: 1, globalAlpha: 0.5});
+
+        }
+        
+        // getDarkerColor function no longer needed for projections, but keeping for potential future use
+        function getDarkerColor(colorName) {
+            if (colorName === "#7FFFA0") return "#4FBF70"; // Darker green
+            if (colorName === "#FF8A9B") return "#CC5A6B"; // Darker red
+            return colorName; // fallback
+        }
+
+        draw();
+    </script>
+</body>
+
+</html>

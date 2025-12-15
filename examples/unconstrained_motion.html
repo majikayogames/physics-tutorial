@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Unconstrained Motion Example</title>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 2.9), vec2(8.36, 4), true)
+
+        // Create physics world
+        let world = new PhysWorld()
+        
+        // Enable gravity for arcing trajectories
+        world.gravity = new Vec2(0, -9.81)
+
+        // Calculate screen coordinates for better trajectories
+        const bottomLeft = ez.screenToWorld(vec2(0, canvas.height))
+        const bottomRight = ez.screenToWorld(vec2(canvas.width, canvas.height))
+        const topLeft = ez.screenToWorld(vec2(0, 0))
+        const topRight = ez.screenToWorld(vec2(canvas.width, 0))
+        
+        // Calculate screen dimensions in world units
+        const screenWidth = bottomRight.x - bottomLeft.x
+        const screenHeight = topLeft.y - bottomLeft.y
+
+        // Track last auto-throw time and side
+        let lastAutoThrow = Date.now()
+        let throwFromLeft = true  // Alternate between left and right
+        let lastManualThrow = 0   // Track when user last threw a box
+        const manualThrowPause = 3500  // Pause auto-throwing for 3.5 seconds after manual throw
+
+        function autoThrowBox() {
+            // Don't throw if we're in manual throw pause period
+            const now = Date.now()
+            if (now - lastManualThrow < manualThrowPause) {
+                return;
+            }
+
+            // Alternate between left and right corners
+            const throwFromLeft = Math.random() < 0.5
+            
+            // Calculate starting position with more variation
+            const startX = throwFromLeft ? 
+                bottomLeft.x - 1 + (Math.random() - 0.5) :  // Left side
+                bottomRight.x + 1 + (Math.random() - 0.5)   // Right side
+            
+            const size = 0.2 + Math.random() * 0.3  // Slightly smaller boxes
+            const box = world.addBox(
+                startX,
+                bottomLeft.y - 2 + Math.random() * 1.5, // More vertical variation in start
+                size, size
+            )
+            box.collisionMask = 0
+            
+            // More varied target areas
+            const targetX = throwFromLeft ? 
+                bottomLeft.x + screenWidth * (0.4 + Math.random() * 0.5) :  // Target 40-90% across
+                bottomRight.x - screenWidth * (0.4 + Math.random() * 0.5)   // More variation
+            
+            const targetY = bottomLeft.y + screenHeight * (0.3 + Math.random() * 0.6)  // Target 30-90% of height
+            
+            // Calculate velocity with more variation
+            const gravity = 9.81
+            const dx = targetX - startX
+            const dy = targetY - (bottomLeft.y - 2)
+            
+            // Add some randomness to throw timing for more varied arcs
+            const throwTime = Math.sqrt(2 * (dy + gravity * dx * dx / (2 * 100))) / Math.sqrt(gravity)
+            const timeVariation = 0.7 + Math.random() * 0.6  // 70-130% of calculated time
+            const velX = dx / (throwTime * timeVariation)
+            const velY = dy / (throwTime * timeVariation) + gravity * throwTime * timeVariation / 2
+            
+            // Add more velocity variation
+            box.velocity = new Vec2(
+                velX * (0.8 + Math.random() * 0.4),  // ±20% variation
+                velY * (0.8 + Math.random() * 0.4)   // ±20% variation
+            )
+            
+            // More varied rotation
+            box.angularVelocity = (Math.random() - 0.5) * 15
+        }
+
+        function throwBox() {
+            // Manual throw from bottom center
+            const size = 0.2 + Math.random() * 0.3
+            const startX = (bottomLeft.x + bottomRight.x) / 2 + (Math.random() - 0.5) * 2  // Center ±1 unit
+            
+            const box = world.addBox(
+                startX,
+                bottomLeft.y - 1,  // Just below screen
+                size, size
+            )
+            box.collisionMask = 0
+            
+            // More natural upward throw
+            const throwAngle = (75 + Math.random() * 20) * Math.PI / 180  // 75-95 degrees (mostly upward)
+            const throwSpeed = 8 + Math.random() * 4  // Speed between 8-12
+            
+            // Calculate velocities for upward throw
+            const velX = throwSpeed * Math.cos(throwAngle) * (Math.random() < 0.5 ? 1 : -1)  // Random left/right
+            const velY = throwSpeed * Math.sin(throwAngle)
+            
+            box.velocity = new Vec2(velX, velY)
+            
+            // Random spin
+            box.angularVelocity = (Math.random() - 0.5) * 20
+
+            // Update last manual throw time and exit burst mode
+            lastManualThrow = Date.now()
+            burstMode = false
+        }
+
+        // Create initial box
+        autoThrowBox()
+
+        // Animation state
+        let burstMode = false;  // Track if we're in rapid-fire mode
+        let burstEndTime = 0;   // When to end current burst
+
+        // Simplified GUI controls - just add box button
+        const controls = {
+            "Add Box": throwBox
+        }
+
+        // Create GUI with just the add box button
+        ez.gui(controls, {}, {
+            theme: 'minimalist',
+            darkMode: (() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const theme = urlParams.get('theme');
+                return theme !== 'light';
+            })(),
+            hideControlsButton: true  // Hide controls by default
+        })
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+            
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+            
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            //ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey")
+            //ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey")
+            
+            // Render physics objects
+            PhysRenderer.render(world)
+            
+            // Update physics
+            world.step(dt)
+
+            // Randomly enter/exit burst mode
+            const now = Date.now()
+            if (!burstMode && Math.random() < 0.02 && (now - lastManualThrow > manualThrowPause)) {  // Only enter burst mode if not in manual pause
+                burstMode = true;
+                burstEndTime = now + 500 + Math.random() * 1000;  // Burst for 0.5-1.5 seconds
+            }
+            if (burstMode && (now > burstEndTime || now - lastManualThrow < manualThrowPause)) {
+                burstMode = false;
+                lastAutoThrow = now + 500 + Math.random() * 1000;  // Add pause after burst
+            }
+
+            // Throw boxes based on current mode
+            if (burstMode) {
+                if (now - lastAutoThrow > 50 + Math.random() * 100) {  // Rapid fire: 0.05-0.15 seconds
+                    autoThrowBox();
+                    lastAutoThrow = now;
+                }
+            } else {
+                if (now - lastAutoThrow > 500 + Math.random() * 1500) {  // Normal: 0.5-2 seconds
+                    autoThrowBox();
+                    lastAutoThrow = now;
+                }
+            }
+
+            // Remove objects that are off screen
+            world.objects = world.objects.filter(obj => {
+                if (obj.isStatic) return true;
+                
+                // Convert screen edges to world coordinates
+                const topLeft = ez.screenToWorld(vec2(0, 0))
+                const bottomRight = ez.screenToWorld(vec2(canvas.width, canvas.height))
+                const margin = obj._boxHints.width * 4
+
+                // Keep object if it's still on screen
+                return !(obj.position.y < bottomRight.y - margin || obj.position.x > bottomRight.x + margin)
+            })
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+
+        // Initialize mouse controls
+        //PhysRenderer.initMouseControls(world)
+    </script>
+</body>
+</html> 

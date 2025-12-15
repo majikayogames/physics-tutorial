@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Torque Emerging from Particles and Constraints</title>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,400;0,600;1,400&family=Source+Sans+Pro:wght@400;600&display=swap">
+</head>
+
+<body>
+  <script src="ezdraw.js"></script>
+  <script>
+    // Basic version of simple_phys just for particles
+    class Vec2 {
+      constructor(x, y) { this.x = x; this.y = y; }
+      add(other) { return new Vec2(this.x + other.x, this.y + other.y); }
+      sub(other) { return new Vec2(this.x - other.x, this.y - other.y); }
+      scale(scalar) { return new Vec2(this.x * scalar, this.y * scalar); }
+      dot(other) { return this.x * other.x + this.y * other.y; }
+      cross(other) { return this.x * other.y - this.y * other.x; }
+      crossSv(scalar) { return new Vec2(-this.y * scalar, this.x * scalar); }
+      length() { return Math.sqrt(this.x * this.x + this.y * this.y); }
+      normalized() { return (Math.abs(this.x) < 0.000000001 && Math.abs(this.y) < 0.000000001) ? new Vec2(1, 0) : this.scale(1 / this.length()); }
+      rotate(angle) { const cos = Math.cos(angle); const sin = Math.sin(angle); return new Vec2(this.x * cos - this.y * sin, this.x * sin + this.y * cos); }
+      rotate90CCW() { return new Vec2(-this.y, this.x); }
+      min(other) { return new Vec2(Math.min(this.x, other.x), Math.min(this.y, other.y)); }
+      max(other) { return new Vec2(Math.max(this.x, other.x), Math.max(this.y, other.y)); }
+    }
+
+    class PhysObject {
+      constructor(x, y, mass) {
+        this.position = new Vec2(x, y);
+        this.velocity = new Vec2(0, 0);
+        this.mass = mass;
+        this.force = new Vec2(0, 0);
+      }
+
+      addForce(f) {
+        this.force = this.force.add(f);
+      }
+
+      step(dt) {
+        // Apply force-based physics: F = ma, so a = F/m
+        const acceleration = this.force.scale(1 / this.mass);
+        this.velocity = this.velocity.add(acceleration.scale(dt));
+        this.position = this.position.add(this.velocity.scale(dt));
+      }
+
+      applyImpulse(impulse) {
+        this.velocity = this.velocity.add(impulse.scale(1 / this.mass));
+      }
+    }
+
+    class SpringConstraint {
+      constructor(objA, objB, restLength, stiffness = 50, damping = 1) {
+        this.objA = objA;
+        this.objB = objB;
+        this.restLength = restLength;
+        this.stiffness = stiffness;
+        this.damping = damping;
+      }
+
+      solve(dt) {
+        const delta = this.objA.position.sub(this.objB.position);
+        const currentLength = delta.length();
+        
+        if (currentLength < 0.0001) return; // Avoid division by zero
+        
+        const displacement = currentLength - this.restLength;
+        const direction = delta.scale(1 / currentLength); // normalized direction
+        
+        // Spring force: F = -k * displacement
+        const springForce = direction.scale(-this.stiffness * displacement);
+        
+        // Damping force: F = -c * relative_velocity
+        const relativeVelocity = this.objA.velocity.sub(this.objB.velocity);
+        const dampingForce = direction.scale(-this.damping * direction.dot(relativeVelocity));
+        
+        // Total force
+        const totalForce = springForce.add(dampingForce);
+        
+        // Apply forces (F = ma, so impulse = F * dt)
+        const impulseA = totalForce.scale(dt);
+        const impulseB = totalForce.scale(-dt);
+        
+        this.objA.applyImpulse(impulseA);
+        this.objB.applyImpulse(impulseB);
+      }
+    }
+
+    class PhysWorld {
+      constructor() {
+        this.objects = [];
+        this.constraints = [];
+        this.gravity = new Vec2(0, -9.81);
+      }
+
+      step(dt) {
+        const substeps = 40;
+        const dtSubstep = dt / substeps;
+
+        for (let k = 0; k < substeps; ++k) {
+          for (const c of this.constraints) c.solve(dtSubstep);
+          for (const obj of this.objects) obj.step(dtSubstep);
+        }
+        
+        // Clear forces after each step
+        for (const obj of this.objects) {
+          obj.force = new Vec2(0, 0);
+        }
+      }
+    }
+  </script>
+  <script>
+    // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+    let canvas = ez.createCanvasAndAddToPage()
+    ez.centerOrigin = true
+    ez.letterBoxCamera(vec2(5, 0), vec2(16, 8), true)
+
+    const world = new PhysWorld();
+    const objA = new PhysObject(0, 1 + 2, 1);
+    const objB = new PhysObject(0, -1 + 2, 1);
+    world.objects.push(objA);
+    world.objects.push(objB);
+    world.constraints.push(new SpringConstraint(objA, objB, 2));
+
+    const objC = new PhysObject(0, 1 - 2, 1);
+    const objD = new PhysObject(0, -1 - 2, 1);
+    world.objects.push(objC);
+    world.objects.push(objD);
+    world.constraints.push(new SpringConstraint(objC, objD, 2));
+
+    function resetBarbells() {
+      objA.position = new Vec2(0, 1 + 2);
+      objA.velocity = new Vec2(0, 0);
+      objA.force = new Vec2(0, 0);
+      objB.position = new Vec2(0, -1 + 2);
+      objB.velocity = new Vec2(0, 0);
+      objB.force = new Vec2(0, 0);
+      objC.position = new Vec2(0, 1 - 2);
+      objC.velocity = new Vec2(0, 0);
+      objC.force = new Vec2(0, 0);
+      objD.position = new Vec2(0, -1 - 2);
+      objD.velocity = new Vec2(0, 0);
+      objD.force = new Vec2(0, 0);
+    }
+
+    function drawPhysWorld(world) {
+      for (const obj of world.objects) {
+        ez.circle(obj.position, 0.1).fill("black");
+      }
+      for (const constraint of world.constraints) {
+        drawSpring(constraint.objA.position, constraint.objB.position);
+      }
+    }
+
+    function drawSpring(posA, posB) {
+      const delta = posB.sub(posA);
+      const length = delta.length();
+      const direction = delta.normalized();
+      const perpendicular = direction.rotate90CCW();
+      
+      const numCoils = 10;
+      const amplitude = 0.15;
+      const flatEndLength = 0.2; // Length of flat ends
+      
+      // Calculate positions for flat ends and coiled middle section
+      const flatEndA = posA.add(direction.scale(flatEndLength));
+      const flatEndB = posB.sub(direction.scale(flatEndLength));
+      const coilLength = length - 2 * flatEndLength;
+      
+      const points = [];
+      
+      // Start with connection point A
+      points.push(posA);
+      
+      // Add flat end at A
+      points.push(flatEndA);
+      
+      // Add zigzag coils in the middle section
+      for (let i = 1; i < numCoils; i++) {
+        const t = i / numCoils;
+        const basePos = flatEndA.add(direction.scale(t * coilLength));
+        const offset = perpendicular.scale(amplitude * (i % 2 === 0 ? 1 : -1));
+        points.push(basePos.add(offset));
+      }
+      
+      // Add flat end at B
+      points.push(flatEndB);
+      
+      // End with connection point B
+      points.push(posB);
+      
+      // Draw lines connecting all points
+      for (let i = 0; i < points.length - 1; i++) {
+        ez.line(points[i], points[i + 1]).stroke("black");
+      }
+    }
+
+    // Fixed timestep settings
+    const FIXED_DT = 1 / 240;          // Physics step = 240 Hz
+    const MAX_SUBSTEPS = 4;            // Clamp work per animation frame
+    let accumulator = 0;               // Un-simulated real-time
+
+    let timePassed = 0;                // Simulation time (not real wall-clock)
+    let sleepPhase = true;
+    let forceApplicationPhase = false;
+    let forceStartTime = 0;
+    
+    // Configurable durations
+    const sleepDuration = 5.0;          // seconds - pause before boxes/particles start moving
+    const baseCycleDuration = 12.0;     // seconds of active simulation (excluding initial sleep)
+    const forceApplicationDuration = 1.0; // seconds - adjust this value as needed
+    
+    // Calculate forces needed to deliver same energy as original impulses
+    // Original impulses: objA = 2, objC = 1, objD = 1
+    // To get same impulse over time: Force = Impulse / Duration
+    const forceA = 2.0 / forceApplicationDuration; // 2 N for 1 second = 2 N⋅s impulse
+    const forceCD = 1.0 / forceApplicationDuration; // 1 N for 1 second = 1 N⋅s impulse
+
+    // --- GUI controls ---
+    const controls = {
+      "Show rigid bodies [R]": false
+    };
+    let showRigidBodies = false;
+    let transitionStartTime = null;
+    let transitionDuration = 200; // ms
+    let transitionFromState = false;
+    let transitionToState = false;
+    
+    ez.gui(controls, {
+      "Show rigid bodies [R]": val => { 
+        // Start new transition
+        let currentTime = performance.now();
+        
+        // If we're currently transitioning, use the current target as the new starting point
+        let currentVisualState = showRigidBodies;
+        if (transitionStartTime !== null) {
+          let elapsed = currentTime - transitionStartTime;
+          let progress = Math.min(elapsed / transitionDuration, 1);
+          if (progress >= 1) {
+            // Transition was complete, use final state
+            currentVisualState = transitionToState;
+            showRigidBodies = transitionToState; // Update the actual state
+          } else {
+            // Mid-transition: the "from" state becomes our current target state
+            currentVisualState = transitionToState;
+          }
+        }
+        
+        transitionStartTime = currentTime;
+        transitionFromState = currentVisualState;
+        transitionToState = val;
+      }
+    }, {
+      theme: 'minimalist',
+      darkMode: (() => {
+        // Get theme from URL parameter
+        const urlParams = new URLSearchParams(window.location.search);
+        const theme = urlParams.get('theme');
+        return theme !== 'light';
+      })(),
+      hideControlsButton: true
+    });
+
+    // Main animation function
+    function update(dt) {
+      ez.clear()
+
+      dt = Math.min(dt, 0.1);
+
+      // Accumulate real time and run the physics in fixed-size steps
+      accumulator += dt;
+      let substeps = 0;
+
+      while (accumulator >= FIXED_DT && substeps < MAX_SUBSTEPS) {
+        // Demo cycle reset: base active duration + initial sleep duration
+        if (timePassed >= baseCycleDuration + sleepDuration) {
+          resetBarbells();
+          timePassed = 0;
+          sleepPhase = true;
+          forceApplicationPhase = false;
+          forceStartTime = 0;
+        }
+
+        // Phase transitions (sleep → force application → done)
+        if (sleepPhase && timePassed >= sleepDuration) {
+          sleepPhase = false;
+          forceApplicationPhase = true;
+          forceStartTime = timePassed;
+        }
+        if (forceApplicationPhase && (timePassed - forceStartTime) >= forceApplicationDuration) {
+          forceApplicationPhase = false;
+        }
+
+        // External forces for this physics step
+        if (forceApplicationPhase) {
+          objA.addForce(new Vec2(forceA, 0));
+          objC.addForce(new Vec2(forceCD, 0));
+          objD.addForce(new Vec2(forceCD, 0));
+        }
+
+        // Step physics world at fixed dt
+        world.step(FIXED_DT);
+
+        accumulator -= FIXED_DT;
+        timePassed += FIXED_DT;
+        substeps++;
+      }
+
+      // Draw grid for reference
+      ez.ctx.lineWidth = 1
+      ez.grid(1, 50).stroke(0xbbbbbb)
+
+      // Draw coordinate axes
+      ez.ctx.lineWidth = 1.5
+      //ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke("grey")
+      ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke("grey")
+
+      // --- Handle transition animation ---
+      let currentTime = performance.now();
+      let transitionProgress = 0;
+      let isTransitioning = false;
+      
+      if (transitionStartTime !== null) {
+        let elapsed = currentTime - transitionStartTime;
+        transitionProgress = Math.min(elapsed / transitionDuration, 1);
+        isTransitioning = transitionProgress < 1;
+        
+        if (!isTransitioning) {
+          // Transition complete
+          showRigidBodies = transitionToState;
+          transitionStartTime = null;
+        }
+      }
+
+      // --- Draw physics world or rigid body overlays with transition ---
+      if (isTransitioning) {
+        // During transition, render both with alpha blending
+        let fromAlpha, toAlpha;
+        if (transitionFromState) {
+          // Transitioning from boxes to particles
+          fromAlpha = 1 - transitionProgress;
+          toAlpha = transitionProgress;
+        } else {
+          // Transitioning from particles to boxes
+          fromAlpha = transitionProgress;
+          toAlpha = 1 - transitionProgress;
+        }
+        
+        // Draw particles with alpha
+        ez.ctx.save();
+        ez.ctx.globalAlpha = toAlpha;
+        drawPhysWorld(world);
+        ez.ctx.restore();
+        
+        // Draw boxes with alpha
+        ez.ctx.save();
+        ez.ctx.globalAlpha = fromAlpha;
+        drawBarbellBoxShadow(objA, objB);
+        drawBarbellBoxShadow(objC, objD);
+        drawBarbellBox(objA, objB);
+        drawBarbellBox(objC, objD);
+        ez.ctx.restore();
+        
+      } else if (showRigidBodies) {
+        // Show only boxes
+        drawBarbellBoxShadow(objA, objB);
+        drawBarbellBoxShadow(objC, objD);
+        drawBarbellBox(objA, objB);
+        drawBarbellBox(objC, objD);
+      } else {
+        // Show only particles
+        drawPhysWorld(world);
+      }
+
+      {
+        // Calculate kinetic energy for each barbell
+        // Kinetic energy = 0.5 * mass * velocity^2 for each particle
+        const energyA = 0.5 * objA.mass * objA.velocity.length() * objA.velocity.length();
+        const energyB = 0.5 * objB.mass * objB.velocity.length() * objB.velocity.length();
+        const energyBarbell1 = energyA + energyB; // Total energy of first barbell (objA + objB)
+        const cmVel1 = objA.velocity.add(objB.velocity).scale(0.5);
+        const speedBarbell1 = cmVel1.length();
+        const rVec1 = objA.position.sub(objB.position).scale(0.5);
+        const vRel1 = objA.velocity.sub(objB.velocity).scale(0.5);
+        let angVel1 = rVec1.length() > 1e-6 ? rVec1.cross(vRel1) / (rVec1.length() * rVec1.length()) : 0;
+
+        const energyC = 0.5 * objC.mass * objC.velocity.length() * objC.velocity.length();
+        const energyD = 0.5 * objD.mass * objD.velocity.length() * objD.velocity.length();
+        const energyBarbell2 = energyC + energyD; // Total energy of second barbell (objC + objD)
+        const cmVel2 = objC.velocity.add(objD.velocity).scale(0.5);
+        const speedBarbell2 = cmVel2.length();
+        const rVec2 = objC.position.sub(objD.position).scale(0.5);
+        const vRel2 = objC.velocity.sub(objD.velocity).scale(0.5);
+        let angVel2 = rVec2.length() > 1e-6 ? rVec2.cross(vRel2) / (rVec2.length() * rVec2.length()) : 0;
+
+        // Display energy, linear velocity and angular velocity values using ez.text with nice font styling
+        const textOptions = {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 18,
+          textAlign: "center",
+          textBaseline: "middle",
+          fontStyle: "500"  // Semi-bold
+        };
+
+        // Cheat for clarity. If simulation was accurate, should land at -1rad/s rotation speed for top barbell
+        if(Math.abs(angVel1 - -1.0) < 0.05) angVel1 = -1
+        
+        // Use "Box" labels when in rigid body mode (also during transitions)
+        const labelPrefix = (isTransitioning ? (transitionToState ? "Box" : "Barbell") : (showRigidBodies ? "Box" : "Barbell"));
+        ez.text(`${labelPrefix} 1 Energy: ${energyBarbell1.toFixed(1)} J\nLinear Vel: ${speedBarbell1.toFixed(2)} m/s, Angular Vel: ${angVel1.toFixed(2)} rad/s`, vec2(5, 3.5), textOptions).fill("black");
+        ez.text(`${labelPrefix} 2 Energy: ${energyBarbell2.toFixed(1)} J\nLinear Vel: ${speedBarbell2.toFixed(2)} m/s, Angular Vel: ${angVel2.toFixed(2)} rad/s`, vec2(5, -0.5), textOptions).fill("black");
+      }
+
+      // Sleep phase - just wait
+      if(sleepPhase) {
+        if(timePassed > sleepDuration) {
+          sleepPhase = false;
+          forceApplicationPhase = true;
+          forceStartTime = timePassed;
+        }
+      }
+      
+      if(forceApplicationPhase && (timePassed - forceStartTime) < forceApplicationDuration) {
+        // Draw force arrow for top barbell (objA)
+        const arrowStartA = objA.position.sub(new Vec2(1.2, 0));
+        const arrowEndA = objA.position.sub(new Vec2(0.2, 0));
+        ez.arrow(arrowStartA, arrowEndA, 15).stroke("black");
+        ez.text(`Force of ${forceA.toFixed(1)}N`, arrowStartA.add(new Vec2(-0.5, 0.3)), {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 14,
+          textAlign: "left",
+          textBaseline: "middle",
+          fontStyle: "500"
+        }).fill("black");
+        
+        // Draw force arrow for bottom barbell center (between objC and objD)
+        const barbellCenter = objC.position.add(objD.position).scale(0.5);
+        const arrowStartCenter = barbellCenter.sub(new Vec2(1.2, 0));
+        const arrowEndCenter = barbellCenter.sub(new Vec2(0.2, 0));
+        ez.arrow(arrowStartCenter, arrowEndCenter, 15).stroke("black");
+        ez.text(`Force of ${(forceCD * 2).toFixed(1)}N`, arrowStartCenter.add(new Vec2(-0.5, 0.3)), {
+          fontFamily: "'Source Sans Pro', sans-serif",
+          fontSize: 14,
+          textAlign: "left",
+          textBaseline: "middle",
+          fontStyle: "500"
+        }).fill("black");
+      }
+    }
+
+    // Draw a rectangle shadow for a barbell (two particles)
+    function drawBarbellBoxShadow(p1, p2) {
+      ez.ctx.save();
+      ez.ctx.shadowColor = ez.parseColor("rgba(0,0,0,0.55)");
+      ez.ctx.shadowBlur = 10;
+      ez.ctx.shadowOffsetX = 5;
+      ez.ctx.shadowOffsetY = 5;
+
+      const center = vec2(
+        (p1.position.x + p2.position.x) * 0.5,
+        (p1.position.y + p2.position.y) * 0.5
+      );
+      const delta = new Vec2(p2.position.x - p1.position.x, p2.position.y - p1.position.y);
+      const length = delta.length() + 0.2; // a bit longer than the spring
+      const angle = Math.atan2(delta.y, delta.x);
+      const thickness = 0.33; // slightly larger than particle diameter
+      ez.rect(center, [length, thickness], angle).fill("rgba(0,0,0,0.2)");
+
+      ez.ctx.restore();
+    }
+
+    // Draw a rectangle overlay for a barbell (two particles)
+    function drawBarbellBox(p1, p2) {
+      ez.ctx.lineWidth = 1;
+      const center = vec2(
+        (p1.position.x + p2.position.x) * 0.5,
+        (p1.position.y + p2.position.y) * 0.5
+      );
+      const delta = new Vec2(p2.position.x - p1.position.x, p2.position.y - p1.position.y);
+      const length = delta.length() + 0.2; // a bit longer than the spring
+      const angle = Math.atan2(delta.y, delta.x);
+      const thickness = 0.33; // slightly larger than particle diameter
+      ez.rect(center, [length, thickness], angle).fillAndStroke("#FFB3BAEE", "#2F3437");
+    }
+
+    // Start the animation
+    ez.callAnimate(update, true);
+  </script>
+</body>
+
+</html>

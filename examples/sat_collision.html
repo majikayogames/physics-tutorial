@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SAT Collision Detection Example</title>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script>
+        // Setup canvas with proper scaling (y is up, 100px = 1 unit)
+        let canvas = ez.createCanvasAndAddToPage()
+        ez.centerOrigin = true
+        ez.letterBoxCamera(vec2(0, 0), vec2(8.36, 4), true)
+        // Disable default touch gestures (scroll/zoom) on the canvas
+        canvas.style.touchAction = 'none'
+
+        // Create physics world
+        let world = new PhysWorld()
+        
+        // Color palette and outline color from simple_phys_ezdraw_renderer.js
+        const _palette = [
+            "#FFB3BA", "#BAFFC9", "#BAE1FF", "#FFFFBA",
+            "#FFB5E8", "#B5FFCE", "#B5B9FF", "#F3FFB5",
+            "#FFC9DE", "#C9FFF7", "#C5A3FF", "#FFE5A3"
+        ]
+        const _outlineColor = "#2F3437"
+        const _collisionOutlineColor = "#800000" // Maroon
+        const _mtvArrowColor = "#800000" // Maroon
+        const _normalArrowColor = "#444444" // Charcoal color for normal arrows
+        const _separatingAxisColor = "#4790DE" // Blue color
+
+        // Common text options based on user example
+        const textOptions = {
+            fontFamily: "'Source Sans Pro', sans-serif",
+            fontSize: 16, // Slightly smaller for annotation
+            textAlign: 'left',
+            textBaseline: 'bottom', // Align to bottom for corner placement
+            fontStyle: '600'
+        };
+
+        // Helper function to create polygon vertices
+        function createRegularPolygon(sides, radius) {
+            const vertices = []
+            for (let i = 0; i < sides; i++) {
+                const angle = (i / sides) * Math.PI * 2
+                vertices.push(new Vec2(
+                    radius * Math.cos(angle),
+                    radius * Math.sin(angle)
+                ))
+            }
+            return vertices
+        }
+
+        // Create various shapes
+        const shapes = []
+
+        // Helper function to assign colors
+        function getObjectColor(index) {
+            return _palette[index % _palette.length]
+        }
+
+        // Triangle
+        shapes.push({
+            vertices: createRegularPolygon(3, 0.8),
+            pos: new Vec2(-1, 0),
+            angle: 0,
+            color: getObjectColor(0), // Assign color based on index
+            name: "Triangle" // Add name
+        })
+
+        // Square
+        shapes.push({
+            vertices: createRegularPolygon(4, 0.7),
+            pos: new Vec2(1, 0),
+            angle: Math.PI/4,
+            color: getObjectColor(1), // Assign color based on index
+            name: "Square" // Add name
+        })
+
+        // // Pentagon
+        // shapes.push({
+        //     vertices: createRegularPolygon(5, 0.6),
+        //     pos: new Vec2(2, 1),
+        //     angle: 0,
+        //     color: getObjectColor(2) // Assign color based on index
+        // })
+
+        // // Hexagon
+        // shapes.push({
+        //     vertices: createRegularPolygon(6, 0.6),
+        //     pos: new Vec2(0, -1),
+        //     angle: 0,
+        //     color: getObjectColor(3) // Assign color based on index
+        // })
+
+        // SAT collision detection implementation
+        function dot(v1, v2) {
+            return v1.x * v2.x + v1.y * v2.y
+        }
+
+        function normalize(v) {
+            const len = Math.sqrt(v.x * v.x + v.y * v.y)
+            return new Vec2(v.x / len, v.y / len)
+        }
+
+        function getProjection(vertices, pos, angle, axis) {
+            let min = Infinity
+            let max = -Infinity
+            let minVertex = null
+            let maxVertex = null
+            let minDistSq = Infinity // Store distance squared for closest min vertex
+            let maxDistSq = Infinity // Store distance squared for closest max vertex
+            const epsilon = 1e-6;     // Epsilon for float comparison
+
+            for (let vertex of vertices) {
+                const transformed = transformVertex(vertex, pos, angle)
+                const projection = dot(transformed, axis)
+                const distSq = dot(transformed, transformed) - projection*projection;
+
+                // Check for new minimum
+                if (projection < min - epsilon) {
+                    min = projection;
+                    minVertex = transformed;
+                    minDistSq = distSq;
+                } else if (Math.abs(projection - min) < epsilon) {
+                    // Same projection value, check distance
+                    if (distSq < minDistSq) {
+                        minVertex = transformed;
+                        minDistSq = distSq;
+                    }
+                }
+
+                // Check for new maximum
+                if (projection > max + epsilon) {
+                    max = projection;
+                    maxVertex = transformed;
+                    maxDistSq = distSq;
+                } else if (Math.abs(projection - max) < epsilon) {
+                    // Same projection value, check distance
+                    if (distSq < maxDistSq) {
+                        maxVertex = transformed;
+                        maxDistSq = distSq;
+                    }
+                }
+            }
+
+            return { min, max, minVertex, maxVertex } // Return vertices too
+        }
+
+        function getAxes(vertices, angle) {
+            const axes = []
+            for (let i = 0; i < vertices.length; i++) {
+                const j = (i + 1) % vertices.length
+                const edge = new Vec2(
+                    vertices[j].x - vertices[i].x,
+                    vertices[j].y - vertices[i].y
+                )
+                // Rotate edge by angle
+                const cos = Math.cos(angle)
+                const sin = Math.sin(angle)
+                const rotated = new Vec2(
+                    edge.x * cos - edge.y * sin,
+                    edge.x * sin + edge.y * cos
+                )
+                // Get perpendicular axis
+                const axis = normalize(new Vec2(rotated.y, -rotated.x))
+                axes.push(axis)
+            }
+            return axes
+        }
+
+        // Helper function to transform a single vertex
+        function transformVertex(vertex, pos, angle) {
+            const cos = Math.cos(angle)
+            const sin = Math.sin(angle)
+            return new Vec2(
+                vertex.x * cos - vertex.y * sin + pos.x,
+                vertex.x * sin + vertex.y * cos + pos.y
+            )
+        }
+
+        function checkCollision(shape1, shape2) {
+            // Get axes from both shapes
+            const axes1 = getAxes(shape1.vertices, shape1.angle)
+            const axes2 = getAxes(shape2.vertices, shape2.angle)
+            // Combine axes, ensuring no duplicates (or near duplicates)
+            const axes = [...axes1]
+            const epsilon = 1e-6;
+            for (const axis2 of axes2) {
+                let unique = true;
+                for (const axis1 of axes1) {
+                    // Check if axis2 is parallel or anti-parallel to axis1
+                    if (Math.abs(dot(axis1, axis2)) > 1.0 - epsilon) {
+                        unique = false;
+                        break;
+                    }
+                }
+                if (unique) {
+                    axes.push(axis2);
+                }
+            }
+
+            // Check projection on each axis
+            let minOverlap = Infinity;
+            let mtvAxis = null;
+            let mtvSourceShapeOrigin = -1; // Track origin of the mtvAxis
+
+            for (let i = 0; i < axes.length; i++) {
+                const axis = axes[i];
+                const proj1 = getProjection(shape1.vertices, shape1.pos, shape1.angle, axis)
+                const proj2 = getProjection(shape2.vertices, shape2.pos, shape2.angle, axis)
+
+                // If we find a separating axis, shapes are not colliding
+                if (proj1.max < proj2.min || proj2.max < proj1.min) {
+                    // Determine which shape this axis originated from
+                    const sourceShapeOrigin = i < axes1.length ? 0 : 1; // 0 for shape1, 1 for shape2
+                    return { colliding: false, separatingAxis: axis, sourceShapeOrigin: sourceShapeOrigin };
+                }
+
+                // Calculate overlap if not separating
+                const overlap = Math.min(proj1.max, proj2.max) - Math.max(proj1.min, proj2.min);
+
+                // Check if this is the smallest overlap found so far
+                if (overlap < minOverlap) {
+                    minOverlap = overlap;
+                    mtvAxis = axis;
+                    mtvSourceShapeOrigin = i < axes1.length ? 0 : 1; // Track origin
+                }
+            }
+
+            // If we get here, shapes are colliding. Determine MTV direction.
+            let mtv = mtvAxis.scale(minOverlap);
+            // Ensure MTV points from shape2 towards shape1 (or consistently)
+            const centerToCenter = shape1.pos.sub(shape2.pos);
+            if (dot(centerToCenter, mtv) < 0) {
+                // If MTV points against the center-to-center vector, flip it
+                mtv = mtv.scale(-1); // Scale by -1 to negate
+            }
+
+            return { colliding: true, mtv: mtv, overlap: minOverlap, mtvAxis: mtvAxis, mtvSourceShapeOrigin: mtvSourceShapeOrigin };
+        }
+
+        // Point-in-polygon test (Ray Casting)
+        function pointInPolygon(point, polygonVertices) {
+            const x = point.x, y = point.y;
+            let isInside = false;
+            for (let i = 0, j = polygonVertices.length - 1; i < polygonVertices.length; j = i++) {
+                const xi = polygonVertices[i].x, yi = polygonVertices[i].y;
+                const xj = polygonVertices[j].x, yj = polygonVertices[j].y;
+
+                const intersect = ((yi > y) !== (yj > y))
+                    && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+                if (intersect) isInside = !isInside;
+            }
+            return isInside;
+        }
+
+        // Mouse interaction
+        let selectedShape = null
+        let dragOffset = null
+        let activeTouchId = null // Track the touch identifier for dragging
+
+        // Helper: convert client (screen) coordinates to world coordinates
+        function getWorldPosFromClient(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect()
+            const x = clientX - rect.left
+            const y = clientY - rect.top
+            return ez.screenToWorld(vec2(x, y))
+        }
+
+        canvas.addEventListener('mousedown', (e) => {
+            const mousePosWorldVec2 = ez.getMousePosWorld(); // Get world coords using ezdraw helper
+            const mousePosWorld = mousePosWorldVec2; // Use Vec2 directly
+
+            // Check if mouse is over any shape using point-in-polygon
+            // Iterate in reverse to grab top-most shape first
+            for (let i = shapes.length - 1; i >= 0; i--) {
+                const shape = shapes[i];
+                const transformedVertices = shape.vertices.map(v => transformVertex(v, shape.pos, shape.angle));
+                
+                if (pointInPolygon(mousePosWorld, transformedVertices)) {
+                    selectedShape = shape;
+                    // Calculate drag offset relative to shape's position
+                    dragOffset = new Vec2(mousePosWorld.x - shape.pos.x, mousePosWorld.y - shape.pos.y);
+                    break; // Stop after finding the first shape
+                }
+            }
+        })
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (selectedShape) {
+                const mousePosWorldVec2 = ez.getMousePosWorld(); // Get world coords using ezdraw helper
+
+                selectedShape.pos = new Vec2(
+                    mousePosWorldVec2.x - dragOffset.x,
+                    mousePosWorldVec2.y - dragOffset.y
+                )
+            }
+        })
+
+        canvas.addEventListener('mouseup', () => {
+            selectedShape = null
+        })
+
+        // Touch interaction (single-touch drag)
+        canvas.addEventListener('touchstart', (e) => {
+            // Prevent page scroll/zoom while interacting
+            e.preventDefault()
+
+            // If already dragging with a touch, ignore new touches
+            if (activeTouchId !== null) return
+
+            const touch = e.changedTouches[0]
+            activeTouchId = touch.identifier
+            const touchPosWorld = getWorldPosFromClient(touch.clientX, touch.clientY)
+
+            // Hit test shapes using point-in-polygon
+            for (let i = shapes.length - 1; i >= 0; i--) {
+                const shape = shapes[i]
+                const transformedVertices = shape.vertices.map(v => transformVertex(v, shape.pos, shape.angle))
+                if (pointInPolygon(touchPosWorld, transformedVertices)) {
+                    selectedShape = shape
+                    dragOffset = new Vec2(touchPosWorld.x - shape.pos.x, touchPosWorld.y - shape.pos.y)
+                    break
+                }
+            }
+        }, { passive: false })
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (selectedShape === null || activeTouchId === null) return
+            e.preventDefault()
+
+            // Find the active touch by identifier
+            let touch = null
+            for (let i = 0; i < e.touches.length; i++) {
+                if (e.touches[i].identifier === activeTouchId) {
+                    touch = e.touches[i]
+                    break
+                }
+            }
+            if (!touch) return
+
+            const touchPosWorld = getWorldPosFromClient(touch.clientX, touch.clientY)
+            selectedShape.pos = new Vec2(
+                touchPosWorld.x - dragOffset.x,
+                touchPosWorld.y - dragOffset.y
+            )
+        }, { passive: false })
+
+        function endTouchIfActive(changedTouches) {
+            if (activeTouchId === null) return
+            for (let i = 0; i < changedTouches.length; i++) {
+                if (changedTouches[i].identifier === activeTouchId) {
+                    selectedShape = null
+                    activeTouchId = null
+                    break
+                }
+            }
+        }
+
+        canvas.addEventListener('touchend', (e) => {
+            e.preventDefault()
+            endTouchIfActive(e.changedTouches)
+        }, { passive: false })
+
+        canvas.addEventListener('touchcancel', (e) => {
+            e.preventDefault()
+            endTouchIfActive(e.changedTouches)
+        }, { passive: false })
+
+        // Main animation function
+        function update(dt) {
+            ez.clear()
+            
+            // Draw grid for reference
+            ez.ctx.lineWidth = 1
+            ez.grid(1, 50).stroke(0xbbbbbb)
+            
+            // Draw coordinate axes
+            ez.ctx.lineWidth = 1.5
+            //ez.line(vec2(-1000, 0), vec2(1000, 0)).stroke("grey")
+            
+            // --- 1. Collision Detection --- 
+            let separationInfo = null; 
+            let collisionInfo = null;  
+            let axisInfo = null; // Combined info for drawing axis/normals
+            let axis, drawingMidpoint, proj1, proj2, dotM; // Variables for axis viz
+
+            for (let i = 0; i < shapes.length; i++) {
+                shapes[i].colliding = false; 
+            }
+            for (let i = 0; i < shapes.length; i++) {
+                for (let j = i + 1; j < shapes.length; j++) {
+                    const result = checkCollision(shapes[i], shapes[j]);
+                    if (result.colliding) {
+                        shapes[i].colliding = true;
+                        shapes[j].colliding = true;
+                        if (!collisionInfo) {
+                            collisionInfo = { mtv: result.mtv, shape1Index: i, shape2Index: j, mtvAxis: result.mtvAxis, mtvSourceShapeOrigin: result.mtvSourceShapeOrigin };
+                        }
+                    } else {
+                        if (!separationInfo) {
+                            separationInfo = { axis: result.separatingAxis, shape1Index: i, shape2Index: j, sourceShapeOrigin: result.sourceShapeOrigin };
+                        }
+                    }
+                }
+            }
+            axisInfo = separationInfo || collisionInfo; // Determine if axis info exists
+
+            // --- 2. Draw Shadow Projections (if needed) --- 
+            if (axisInfo) {
+                // Determine axis, indices, and origin
+                axis = separationInfo ? separationInfo.axis : collisionInfo.mtvAxis;
+                const shape1Index = separationInfo ? separationInfo.shape1Index : collisionInfo.shape1Index;
+                const shape2Index = separationInfo ? separationInfo.shape2Index : collisionInfo.shape2Index;
+                const shape1 = shapes[shape1Index];
+                const shape2 = shapes[shape2Index];
+
+                // Determine Midpoint for Drawing based on world boundaries
+                const targetViewSize = vec2(8.36, 4); // From letterBoxCamera call
+                const worldTop = targetViewSize.y / 2;
+                const worldRight = targetViewSize.x / 2;
+                const axisOffset = 0.5; // Offset from the edge in world units
+                const horizontalThreshold = 0.9, verticalThreshold = 0.9;
+
+                if (Math.abs(axis.x) > horizontalThreshold) { 
+                    // Horizontal axis: Position near top edge
+                    drawingMidpoint = new Vec2(0, -worldTop + axisOffset); // Use negative world boundary for bottom
+                } else if (Math.abs(axis.y) > verticalThreshold) { 
+                    // Vertical axis: Position near right edge
+                    drawingMidpoint = new Vec2(worldRight - axisOffset, 0); // Use world boundary
+                } else { 
+                    drawingMidpoint = new Vec2(0, 0); 
+                }
+
+                // Draw the shadow quads
+                const shadowColor = "rgba(0,0,0,0.2)";
+                ez.save();
+                ez.ctx.shadowColor = "rgba(0,0,0,0.4)"; 
+                ez.ctx.shadowBlur = 5; 
+                ez.ctx.shadowOffsetX = 2; 
+                ez.ctx.shadowOffsetY = 2; 
+                proj1 = getProjection(shape1.vertices, shape1.pos, shape1.angle, axis);
+                proj2 = getProjection(shape2.vertices, shape2.pos, shape2.angle, axis);
+                dotM = dot(drawingMidpoint, axis); 
+                const P1_min_axis = drawingMidpoint.add(axis.scale(proj1.min - dotM));
+                const P1_max_axis = drawingMidpoint.add(axis.scale(proj1.max - dotM));
+                const P2_min_axis = drawingMidpoint.add(axis.scale(proj2.min - dotM));
+                const P2_max_axis = drawingMidpoint.add(axis.scale(proj2.max - dotM));
+                const quad1Vertices = [ proj1.minVertex, P1_min_axis, P1_max_axis, proj1.maxVertex ];
+                const quad2Vertices = [ proj2.minVertex, P2_min_axis, P2_max_axis, proj2.maxVertex ];
+                if (proj1.minVertex && proj1.maxVertex) { 
+                    ez.path(quad1Vertices.map(v => vec2(v.x, v.y)), true, false).fill(shadowColor);
+                }
+                if (proj2.minVertex && proj2.maxVertex) { 
+                    ez.path(quad2Vertices.map(v => vec2(v.x, v.y)), true, false).fill(shadowColor);
+                }
+                ez.restore(); 
+            }
+            
+            // --- 3. Draw Shapes --- 
+            // First pass: Fill all shapes
+            for (let shapeIndex = 0; shapeIndex < shapes.length; shapeIndex++) {
+                const shape = shapes[shapeIndex];
+                const transformedVertices = shape.vertices.map(v => transformVertex(v, shape.pos, shape.angle));
+                const ezVertices = transformedVertices.map(v => vec2(v.x, v.y));
+                const fillColor = shape.color + "EE"; 
+                ez.path(ezVertices, true, false).fill(fillColor);
+            }
+            // Second pass: Stroke all shapes (on top of fill)
+            for (let shapeIndex = 0; shapeIndex < shapes.length; shapeIndex++) {
+                const shape = shapes[shapeIndex];
+                ez.ctx.lineWidth = 1; // Ensure line width is set for stroke
+                const transformedVertices = shape.vertices.map(v => transformVertex(v, shape.pos, shape.angle));
+                const ezVertices = transformedVertices.map(v => vec2(v.x, v.y));
+                const strokeColor = shape.colliding ? _collisionOutlineColor : _outlineColor;
+                ez.path(ezVertices, true, false).stroke(strokeColor);
+            }
+
+            // --- 4. Draw Normal Arrows --- 
+            const normalLength = 0.12; 
+            const epsilon = 1e-6; 
+            for (let shapeIndex = 0; shapeIndex < shapes.length; shapeIndex++) {
+                const shape = shapes[shapeIndex];
+                const vertices = shape.vertices;
+                const shapeAxes = getAxes(shape.vertices, shape.angle); // Recalculate axes here
+
+                for (let edgeIndex = 0; edgeIndex < vertices.length; edgeIndex++) {
+                    const v1Local = vertices[edgeIndex];
+                    const v2Local = vertices[(edgeIndex + 1) % vertices.length];
+                    const v1World = transformVertex(v1Local, shape.pos, shape.angle);
+                    const v2World = transformVertex(v2Local, shape.pos, shape.angle);
+                    const midPointWorld = v1World.add(v2World).scale(0.5);
+                    const normal = shapeAxes[edgeIndex]; 
+                    const normalEndPoint = midPointWorld.add(normal.scale(normalLength));
+
+                    // Determine normal color (highlight if it matches the current axis)
+                    let normalColor = _normalArrowColor; 
+                    if (axisInfo) { 
+                        // Reuse axis, indices, origin from section 2 (safe because axisInfo check is the same)
+                        const currentAxis = separationInfo ? separationInfo.axis : collisionInfo.mtvAxis;
+                        const currentSourceShapeOrigin = separationInfo ? separationInfo.sourceShapeOrigin : collisionInfo.mtvSourceShapeOrigin;
+                        const currentShape1Index = separationInfo ? separationInfo.shape1Index : collisionInfo.shape1Index;
+                        const currentShape2Index = separationInfo ? separationInfo.shape2Index : collisionInfo.shape2Index;
+                        const isSourceShape = (currentSourceShapeOrigin === 0 && shapeIndex === currentShape1Index) || (currentSourceShapeOrigin === 1 && shapeIndex === currentShape2Index);
+                        const isMatchingAxis = (Math.abs(normal.x - currentAxis.x) < epsilon && Math.abs(normal.y - currentAxis.y) < epsilon) || (Math.abs(normal.x + currentAxis.x) < epsilon && Math.abs(normal.y + currentAxis.y) < epsilon);
+                        if (isSourceShape && isMatchingAxis) {
+                            normalColor = _separatingAxisColor; 
+                        }
+                    }
+                    ez.arrow(vec2(midPointWorld.x, midPointWorld.y), vec2(normalEndPoint.x, normalEndPoint.y), 5).fillAndStroke(normalColor, normalColor);
+                }
+            }
+
+            // --- 5. Draw Axis Line (if needed) --- 
+            if (axisInfo) {
+                 // Use axis, drawingMidpoint calculated in section 2
+                 const p1_axis = drawingMidpoint.add(axis.scale(10));
+                 const p2_axis = drawingMidpoint.sub(axis.scale(10));
+                 ez.save();
+                 ez.line(vec2(p1_axis.x, p1_axis.y), vec2(p2_axis.x, p2_axis.y)).stroke(_separatingAxisColor + "55", 1);
+                 ez.ctx.setLineDash([10, 10]);
+                 ez.line(vec2(p1_axis.x, p1_axis.y), vec2(p2_axis.x, p2_axis.y)).stroke(_separatingAxisColor, 1);
+                 ez.restore();
+            }
+
+            // --- 6. Draw MTV Arrows (if colliding) ---
+            if (collisionInfo) {
+                 const overlapStart = Math.max(proj1.min, proj2.min);
+                 const overlapEnd = Math.min(proj1.max, proj2.max);
+                 const overlapMidScalar = (overlapStart + overlapEnd) / 2;
+                 const arrowBase = drawingMidpoint.add(axis.scale(overlapMidScalar - dotM));
+                 const halfMtv = collisionInfo.mtv.scale(0.5);
+                 const arrow1End = arrowBase.add(halfMtv);
+                 const arrow2End = arrowBase.sub(halfMtv);
+                 ez.arrow(vec2(arrowBase.x, arrowBase.y), vec2(arrow1End.x, arrow1End.y), 5).fillAndStroke(_mtvArrowColor, _mtvArrowColor);
+                 ez.arrow(vec2(arrowBase.x, arrowBase.y), vec2(arrow2End.x, arrow2End.y), 5).fillAndStroke(_mtvArrowColor, _mtvArrowColor);
+            }
+            
+            // --- 7. Draw Text Annotation (if colliding) ---
+            if (separationInfo && !collisionInfo) {
+                // Calculate world position for bottom-left corner (approx 20px padding)
+                const screenX = 20;
+                const screenY = canvas.height - 20;
+                const textPos = ez.screenToWorld(vec2(screenX, screenY)); // Use screenToWorld
+                // Draw the text label for separation
+                // Determine the source shape name
+                const sourceShapeIndex = separationInfo.sourceShapeOrigin === 0 ? separationInfo.shape1Index : separationInfo.shape2Index;
+                const sourceShapeName = shapes[sourceShapeIndex].name || "Polygon"; // Default if name is missing
+                const labelText = `• Separating axis found (From the highlighted normal of the ${sourceShapeName.toLowerCase()})`; // Convert to lowercase
+                ez.text(labelText, textPos, textOptions)
+                    .fill(_separatingAxisColor); // Use blue color for text
+            } else if (collisionInfo) {
+                // Calculate world position for bottom-left corner (approx 20px padding)
+                const screenX = 20;
+                const screenY = canvas.height - 20;
+                const textPos = ez.screenToWorld(vec2(screenX, screenY)); // Use screenToWorld
+                ez.text("• Maroon arrows = Minimum Translation Vector (to push apart)", textPos, textOptions).fill(_mtvArrowColor);
+            }
+        }
+
+        // Start the animation with automatic pause on hidden
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html> 

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Equality Constraints Example</title>
+</head>
+<body>
+	<script src="ezdraw.js"></script>
+	<script src="../simple_phys.js"></script>
+	<script src="simple_phys_ezdraw_renderer.js"></script>
+	<script>
+		// Setup canvas with proper scaling (y is up, 100px = 1 unit)
+		let canvas = ez.createCanvasAndAddToPage();
+		ez.centerOriginX = true;	// Only center X axis, keep Y=0 at top of screen
+
+		ez.letterBoxCamera(vec2(0, -2.525), vec2(11.5995, 5.55), true)
+
+		// Get URL parameters with defaults
+		const urlParams = new URLSearchParams(window.location.search);
+		const defaultNumLinks = 7;
+		const defaultPhysicsFPS = 240;
+		const defaultNumIterations = 10; // Default constraint iterations
+		
+		const numLinksFromURL = parseInt(urlParams.get('numLinks')) || defaultNumLinks;
+		const physicsFPSFromURL = parseInt(urlParams.get('physicsFPS')) || defaultPhysicsFPS;
+		const numIterationsFromURL = parseInt(urlParams.get('numIterations'));
+		const useWarmStartingFromURL = !(urlParams.get('warmStarting') === 'false');
+		const useRelaxationFromURL = (urlParams.get('useRelaxation') !== 'false');
+
+		// Create physics world
+		let world = new PhysWorld();
+		world.constraintIterations = numIterationsFromURL || world.constraintIterations;
+		world.constraintSettings.mode = 'baumgarte';
+		
+		// Add a visible ceiling
+		const ceilingHeight = 0.5;
+		const ceiling = world.addBox(0, ceilingHeight/2, 50, ceilingHeight, 1, true);	// Very wide ceiling, positioned to align with y=0
+
+		function createDiamondChain(startX, length, size = 0.5, initialImpulse = new Vec2(0, 0)) {
+			const links = [];
+			const sqrt2 = Math.sqrt(2);
+			const diagonal = size * sqrt2;
+			const halfDiagonal = diagonal / 2;
+			
+			for (let i = 0; i < length; i++) {
+				const y = -halfDiagonal - (i * diagonal);	// Hang downwards
+				const box = world.addBox(startX, y, size, size);
+				box.rotation = Math.PI / 4;
+				box.collisionMask = 0;	// Disable collisions for chain links
+				links.push(box);
+				
+				if (i > 0) {
+					const jointPos = new Vec2(startX, -(i * diagonal));
+					world.addRevoluteConstraint(links[i-1], box, jointPos);
+				} else {
+					const anchorPos = new Vec2(startX, 0);	// Anchor at y=0
+					world.addRevoluteConstraint(
+						ceiling,
+						box,
+						anchorPos
+					);
+				}
+
+				// Apply initial impulse, stronger at the bottom of the chain
+				if (initialImpulse.length() > 0.00001) {
+					const scaleFactor = (i + 1) / length;
+					const impulse = initialImpulse.scale(scaleFactor);
+					box.velocity = impulse;
+				}
+			}
+			return links;
+		}
+
+		// Create single chain with initial rightward swing
+		let chainLinks = createDiamondChain(0, numLinksFromURL, 0.5, new Vec2(3, 0));
+
+		// Controls for the simulation
+		const controls = {
+			"Number of Links": numLinksFromURL,
+			"Physics FPS": physicsFPSFromURL,
+			"Bias Mode": ["Baumgarte", "Soft Constraints", "Off"],
+			"Use Warm Starting": useWarmStartingFromURL,
+			_hints: {
+				"Number of Links": {
+					min: "0",
+					max: "30",
+					step: "1"
+				},
+				"Physics FPS": {
+					min: "10",
+					max: "240",
+					step: "1",
+					hidden: urlParams.get('hideFPSControl') === 'true'
+				},
+				"Use Warm Starting": {
+					hidden: !(urlParams.get('showWarmStartingControl') === 'true')
+				},
+				"Bias Mode": {
+					hidden: !(urlParams.get('showBiasControl') === 'true')
+				}
+			}
+		};
+
+		// Create GUI with minimalist theme
+		ez.gui(controls, {
+			"Number of Links": (val) => {
+				const currentLength = chainLinks.length;
+				
+				if (val > currentLength) {
+					// Special case: If chain is empty, recreate the first link
+					if (currentLength === 0) {
+						chainLinks = createDiamondChain(0, 1, 0.5);
+						val--; // Decrease remaining links to add since we just added one
+					}
+					
+					if (val > currentLength) {
+						let lastLink = chainLinks[chainLinks.length - 1];
+						const size = 0.5;
+						const diagonal = size * Math.sqrt(2);
+						
+						for (let i = currentLength + (currentLength === 0 ? 1 : 0); i < val; i++) {
+							const localJointPos = new Vec2(-size/2, -size/2);
+							const jointPos = lastLink.localToWorld(localJointPos);
+							const jointDiff = jointPos.sub(lastLink.position);
+							const newBoxPos = jointPos.add(jointDiff);
+							
+							let box = world.addBox(newBoxPos.x, newBoxPos.y, size, size);
+							box.rotation = lastLink.rotation;
+							box.collisionMask = 0;
+							// Copy velocity from last link for a smooth transition
+							box.velocity = new Vec2(lastLink.velocity.x, lastLink.velocity.y);
+							
+							// Add joint at the calculated joint position
+							world.addRevoluteConstraint(lastLink, box, jointPos);
+							
+							// Append the new box to the chain
+							chainLinks.push(box);
+							lastLink = box;
+						}
+					}
+				} else if (val < currentLength) {
+					// Remove links from the end
+					for (let i = currentLength - 1; i >= val; i--) {
+						const linkToRemove = chainLinks.pop();
+						// Remove all constraints connected to this link
+						world.constraints = world.constraints.filter(c => 
+							c.bodyA !== linkToRemove && c.bodyB !== linkToRemove
+						);
+						// Remove the link itself
+						world.objects = world.objects.filter(b => b !== linkToRemove);
+					}
+				}
+			},
+			"Bias Mode": (val) => {
+				const selection = val || "Baumgarte";
+				const modeMap = { "Soft Constraints": "soft", "Baumgarte": "baumgarte", "Off": "off" };
+				world.constraintSettings.mode = modeMap[selection] || 'baumgarte';
+			}
+		}, {
+			theme: 'minimalist',
+			darkMode: (() => {
+				// Get theme from URL parameter
+				const urlParams = new URLSearchParams(window.location.search);
+				const theme = urlParams.get('theme');
+				return theme !== 'light';
+			})(),
+			hideControlsButton: true
+		});
+
+		// Main animation function
+		function update(dt) {
+			ez.clear();
+			
+			// Always show grid for reference
+			ez.ctx.lineWidth = 1;
+			ez.grid(1, 50).stroke(0xbbbbbb);
+			
+			// Draw coordinate axes
+			ez.ctx.lineWidth = 1.5;
+			ez.line(vec2(0, -1000), vec2(0, 1000), {roundToNearestPixel: true}).stroke("grey");
+			ez.line(vec2(-1000, 0), vec2(1000, 0), {roundToNearestPixel: true}).stroke("grey");
+			
+			// Render physics objects
+			PhysRenderer.render(world);
+
+			world.useRelaxation = useRelaxationFromURL;
+			// Global settings
+			world.constraintSettings.warmStarting = controls["Use Warm Starting"];
+			// Update physics with actual dt and physics FPS
+			world.step(dt, 1/controls["Physics FPS"]);
+		}
+
+		// Start the animation with automatic pause on hidden
+		ez.callAnimate(update, true);
+
+		PhysRenderer.initMouseControls(world);
+	</script>
+</body>
+</html>

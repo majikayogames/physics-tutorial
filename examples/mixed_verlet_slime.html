@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Mixed Slime Interaction Demo</title>
+</head>
+<body>
+    <script src="ezdraw.js"></script>
+    <script src="../simple_phys.js"></script>
+    <script src="simple_phys_mixed_verlet.js"></script>
+    <script src="simple_phys_ezdraw_renderer.js"></script>
+    <script src="slime-renderer-mixed.js"></script>
+    <script src="mixed_slime.js"></script>
+    <script>
+        ez.createCanvasAndAddToPage();
+        ez.centerOrigin = true;
+        ez.letterBoxCamera(vec2(0, 1), vec2(8.36, 6), true);
+
+        const world = new PhysWorldMixed();
+        world.constraintIterations = 25;
+        world.distanceConstraintIterations = 8;
+        PhysRenderer.initMouseControls(world);
+
+        const ground = world.addBox(0, -2, 20, 1, 1, true);
+        const boxA = world.addBox(-1.5, 0, 1, 1);
+        const boxB = world.addBox(1.5, 0, 1, 1);
+        ground.friction = boxA.friction = boxB.friction = 1.0;
+
+        const slimeRenderer = new MixedSlimeRenderer(ez);
+        document.body.appendChild(slimeRenderer.mainSVG);
+        const slime = new MixedSlime(world, slimeRenderer, 0, 2, { radius: 0.8, speed: 0.1 });
+
+        function update(dt) {
+            ez.clear();
+            ez.ctx.lineWidth = 1;
+            ez.grid(1, 50).stroke(0xbbbbbb);
+            ez.ctx.lineWidth = 1.5;
+            ez.line(vec2(0, -1000), vec2(0, 1000), { roundToNearestPixel: true }).stroke('grey');
+            ez.line(vec2(-1000, 0), vec2(1000, 0), { roundToNearestPixel: true }).stroke('grey');
+
+            slime.preStep(dt);
+            world.step(dt);
+            PhysRenderer.render(world);
+            slime.render();
+        }
+
+        ez.callAnimate(update, true);
+    </script>
+</body>
+</html>
