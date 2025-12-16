@@ -1534,8 +1534,8 @@ this.bodyB.angularVelocity += iB * rB.cross(impulse);</code></pre></div>
                 ΔCdot = ΔvelB - ΔvelA<br>
                 ΔCdot.x =<br>
                 ΔvelB.x - ΔvelA.x =<br>
-                Jx * (mB + iB * rB.y²) - Jy * (iB * rB.x * rB.y) - Jx * (mA + iA * rA.y²) + Jy * (iA * rA.x * rA.y) =<br>
-                Jx * (mB + iB * rB.y²) - Jx * (mA + iA * rA.y²) - Jy * (iB * rB.x * rB.y) + Jy * (iA * rA.x * rA.y) =<br>
+                Jx * (mB + iB * rB.y²) - Jy * (iB * rB.x * rB.y) + Jx * (mA + iA * rA.y²) - Jy * (iA * rA.x * rA.y) =<br>
+                Jx * (mB + iB * rB.y²) + Jx * (mA + iA * rA.y²) - Jy * (iB * rB.x * rB.y) - Jy * (iA * rA.x * rA.y) =<br>
                 Jx * (mA + mB + iA * rA.y² + iB * rB.y²) - Jy * (iA * rA.x * rA.y + iB * rB.x * rB.y)
             </div>
             

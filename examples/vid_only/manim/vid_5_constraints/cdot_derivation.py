@@ -21,7 +21,7 @@ class CdotDerivation(Scene):
             ),
             MathTex(
                 r"= Jx * (mB + iB * rB.y^{2}) - Jy * (iB * rB.x * rB.y)"
-                r"\\- Jx * (mA + iA * rA.y^{2}) + Jy * (iA * rA.x * rA.y)",
+                r"\\+ Jx * (mA + iA * rA.y^{2}) - Jy * (iA * rA.x * rA.y)",
                 font_size=48,
             ),
         ).arrange(DOWN, buff=0.6)
@@ -60,11 +60,11 @@ class CdotDerivation(Scene):
         # Fade in separated Jx and Jy grouped lines underneath
         grouped_lines = VGroup(
             MathTex(
-                r"= Jx * (mB + iB * rB.y^{2}) - Jx * (mA + iA * rA.y^{2})",
+                r"= Jx * (mB + iB * rB.y^{2}) + Jx * (mA + iA * rA.y^{2})",
                 font_size=48,
             ),
             MathTex(
-                r"- Jy * (iB * rB.x * rB.y) + Jy * (iA * rA.x * rA.y)",
+                r"- Jy * (iB * rB.x * rB.y) - Jy * (iA * rA.x * rA.y)",
                 font_size=48,
             ),
         ).arrange(DOWN, buff=0.4)
