@@ -23,7 +23,7 @@ class MassRadiusSquared(Scene):
             font_size=38,
         )
         line2 = Text(
-            "torque = force × radius (perpendicular)",
+            "torque = radius × force (perpendicular)",
             font_size=38,
         )
 

@@ -885,7 +885,7 @@ class PhysWorldVerlet {
             <p>The equations for torque and its relationship to angular acceleration are (where × is the cross product with the force application point's offset from the center of mass):</p>
             
             <div class="equation">
-                Torque = Force × r<br />
+                Torque = r × Force<br />
                 Torque = moment of inertia * angular acceleration
             </div>
 
@@ -903,7 +903,7 @@ class PhysWorldVerlet {
             </figure>
 
             <p>
-                The equations for torque, <span class="inline-code">Torque = Force × r</span>, and <span class="inline-code">Torque = moment of inertia * angular acceleration</span> are actually not separate at all from the equation for linear acceleration, <span class="inline-code">F = ma</span>.
+                The equations for torque, <span class="inline-code">Torque = r × Force</span>, and <span class="inline-code">Torque = moment of inertia * angular acceleration</span> are actually not separate at all from the equation for linear acceleration, <span class="inline-code">F = ma</span>.
                 Torque's effect on angular acceleration is simply a result of <span class="inline-code">F = ma</span> applied to each particle of the object, and we can derive it from that:
             </p>
 
@@ -944,7 +944,7 @@ class PhysWorldVerlet {
             </p>
 
             <p>
-                Again the equation for torque is <span class="inline-code">Torque = Force × r</span>, essentially the perpendicular component of the force scaled by the radius.
+                Again the equation for torque is <span class="inline-code">Torque = r × Force</span>, essentially the perpendicular component of the force scaled by the radius.
                 So then to get our equation to match, we can multiply each side by the radius: <span class="inline-code">Force * radius = mass * angular_acceleration * radius * radius</span>, or just <span class="inline-code">Torque = mass * angular_acceleration * radius²</span>.
                 Rearranging it we can see the resistance term: <span class="inline-code">angular_acceleration = Torque / (mass * radius²)</span>, the amount it accelerates angularly will be equal to Torque divided by <span class="inline-code">mass * radius²</span>.
                 So then we can just calculate that resistance term <span class="inline-code">mass * radius²</span> for each particle and add them up, giving us the equivalent of mass for rotation, moment of inertia.

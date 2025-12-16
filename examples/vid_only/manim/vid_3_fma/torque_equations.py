@@ -11,7 +11,7 @@ class TorqueEquations(Scene):
 
         # Plain-language equations
         line1 = Text(
-            "torque = force × r",
+            "torque = r × force",
             font_size=42,
         )
         line2 = Text(
